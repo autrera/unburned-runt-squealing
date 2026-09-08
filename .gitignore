@@ -399,6 +399,7 @@ FodyWeavers.xsd
 build_files
 raylib-master
 Makefile
+!Makefile
 /*.sln
 
 # Vi and Vim
@@ -406,3 +407,9 @@ Makefile
 *.swo
 *.swn
 /build/compile_commands.json
+
+# Zig
+zig-out/
+zig-cache/
+.zig-cache/
+zig-pkg/
