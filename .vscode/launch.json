@@ -1,10 +1,7 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-        "version": "0.2.0",
-        "configurations": [
-          {
+    "version": "0.2.0",
+    "configurations": [
+        {
             "name": "Debug",
             "type": "cppdbg",
             "request": "launch",
@@ -14,59 +11,21 @@
             "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",
-            "setupCommands": [
-              {
-                "description": "Enable pretty-printing for gdb",
-                "text": "-enable-pretty-printing",
-                "ignoreFailures": false
-              }
-            ],
             "windows": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}.exe",
-              "miDebuggerPath": "gdb.exe"
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart.exe",
+                "miDebuggerPath": "gdb.exe"
             },
             "osx": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}",
-              "MIMode": "lldb"
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart",
+                "MIMode": "lldb"
             },
             "linux": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}",
-              "miDebuggerPath": "/usr/bin/gdb",
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart",
+                "miDebuggerPath": "/usr/bin/gdb"
             },
-            "preLaunchTask": "build debug"
-          },
-          {
-            "name": "Debug NoPremake",
-            "type": "cppdbg",
-            "request": "launch",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "setupCommands": [
-              {
-                "description": "Enable pretty-printing for gdb",
-                "text": "-enable-pretty-printing",
-                "ignoreFailures": false
-              }
-            ],
-            "windows": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}.exe",
-              "miDebuggerPath": "gdb.exe"
-            },
-            "osx": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}",
-              "MIMode": "lldb"
-            },
-            "linux": {
-              "program": "${workspaceFolder}/bin/Debug/${workspaceFolderBasename}",
-              "miDebuggerPath": "/usr/bin/gdb",
-            },
-            "preLaunchTask": "build debug no premake"
-          },
-          {
+            "preLaunchTask": "build"
+        },
+        {
             "name": "Run Release",
             "type": "cppdbg",
             "request": "launch",
@@ -77,18 +36,18 @@
             "externalConsole": false,
             "MIMode": "gdb",
             "windows": {
-              "program": "${workspaceFolder}/bin/Release/${workspaceFolderBasename}.exe",
-              "miDebuggerPath": "gdb.exe"
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart.exe",
+                "miDebuggerPath": "gdb.exe"
             },
             "osx": {
-              "program": "${workspaceFolder}/bin/Release/${workspaceFolderBasename}",
-              "MIMode": "lldb"
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart",
+                "MIMode": "lldb"
             },
             "linux": {
-              "program": "${workspaceFolder}/bin/Release/${workspaceFolderBasename}",
-              "miDebuggerPath": "/usr/bin/gdb"
+                "program": "${workspaceFolder}/zig-out/bin/raylib_quickstart",
+                "miDebuggerPath": "/usr/bin/gdb"
             },
-            "preLaunchTask": "build release",
-          }
-        ]
-      }
+            "preLaunchTask": "build release"
+        }
+    ]
+}

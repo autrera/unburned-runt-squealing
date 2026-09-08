@@ -1,5 +1,5 @@
 # Raylib Quickstart - Zig Makefile
-# Wraps `zig build` for the Zig port. For legacy C/C++ builds, use `build/premake5` + `make` as before.
+# Wraps `zig build` for the Zig project.
 # See README.md for details.
 
 ZIG ?= zig
@@ -38,6 +38,3 @@ help:
 	@echo "Zig options (passed via ZIG_BUILD_ARGS or directly):"
 	@echo "  zig build                                        # windowed desktop (default: -Dplatform=glfw -Dopengl_version=gl_3_3, requires X11 dev headers)"
 	@echo "  zig build -Dplatform=memory -Dopengl_version=gl_soft # headless software rendering (no X11 needed, no window)"
-	@echo ""
-	@echo "Legacy C/C++ (premake):"
-	@echo "  cd build && ./premake5 gmake && cd .. && make -f Makefile.premake"

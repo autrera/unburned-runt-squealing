@@ -69,8 +69,7 @@ pub fn main() !void {
 
 /// Looks for the specified resource dir in several common locations
 /// The working dir, the app dir, and up to 3 levels above the app dir.
-/// When found the dir will be set as the working dir so that assets can be loaded relative to that.
-/// Mirrors the C `SearchAndSetResourceDir` from `resource_dir.h`.
+/// Searches for the specified resource directory in several common locations.
 fn searchAndSetResourceDir(folderName: [:0]const u8) bool {
     var buf: [1024:0]u8 = undefined;
 

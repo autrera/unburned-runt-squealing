@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     //   zig build -Dplatform=memory -Dopengl_version=gl_soft
     // The desktop build requires X11 dev headers and libs (libx11-dev,
     // libxcursor-dev, libxrandr-dev, libxinerama-dev, libxi-dev,
-    // libgl1-mesa-dev, libasound2-dev) — see user-space paths below.
+    // libgl1-mesa-dev, libasound2-dev) - see user-space paths below.
     const platform = b.option(rlz.PlatformBackend, "platform", "raylib platform backend") orelse .glfw;
     const opengl_version = b.option(rlz.OpenglVersion, "opengl_version", "OpenGL version") orelse .gl_3_3;
 
