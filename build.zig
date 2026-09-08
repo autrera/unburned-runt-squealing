@@ -51,10 +51,18 @@ pub fn build(b: *std.Build) void {
     const raylib_art = raylib_dep.artifact("raylib");
     if (b.graph.environ_map.get("HOME")) |home| {
         const user_inc = b.pathJoin(&.{ home, ".local", "include" });
+        var user_inc_dir = std.Io.Dir.openDirAbsolute(b.graph.io, user_inc, .{}) catch null;
+        if (user_inc_dir) |*d| {
+            d.close(b.graph.io);
+            raylib_art.root_module.addIncludePath(.{ .cwd_relative = user_inc });
+        }
         const user_lib = b.pathJoin(&.{ home, ".local", "lib" });
-        raylib_art.root_module.addIncludePath(.{ .cwd_relative = user_inc });
-        raylib_art.root_module.addLibraryPath(.{ .cwd_relative = user_lib });
-        exe_mod.addLibraryPath(.{ .cwd_relative = user_lib });
+        var user_lib_dir = std.Io.Dir.openDirAbsolute(b.graph.io, user_lib, .{}) catch null;
+        if (user_lib_dir) |*d| {
+            d.close(b.graph.io);
+            raylib_art.root_module.addLibraryPath(.{ .cwd_relative = user_lib });
+            exe_mod.addLibraryPath(.{ .cwd_relative = user_lib });
+        }
     }
     {
         const fake_inc = "/tmp/fake_sysroot/usr/include";
