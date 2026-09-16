@@ -654,12 +654,42 @@ var selected_building: ?usize = null;
 var hovered_building: ?usize = null;
 
 var is_paused: bool = false;
+var show_controls_dialog: bool = false;
 var should_quit: bool = false;
 var fuel_warning_timer: f32 = 0.0;
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+fn getBuildBtnRect(sh: f32) rl.Rectangle {
+    const btn_w: f32 = 126.0;
+    const btn_h: f32 = 36.0;
+    const btn_x: f32 = 16.0;
+    const btn_y: f32 = if (build_menu_open) sh - 148.0 - btn_h - 8.0 else sh - btn_h - 16.0;
+    return rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h);
+}
+
+fn getControlsBtnRect(sw: f32, sh: f32) rl.Rectangle {
+    const btn_w: f32 = 110.0;
+    const btn_h: f32 = 36.0;
+    const btn_x: f32 = sw - btn_w - 16.0;
+    const btn_y: f32 = if (build_menu_open) sh - 148.0 - btn_h - 8.0 else sh - btn_h - 16.0;
+    return rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h);
+}
+
+fn getPopPillRect(screen_w: i32) rl.Rectangle {
+    const fps_badge_w: i32 = if (LIMIT_FPS_TO_REFRESH_RATE) 124 else 76;
+    const fps_box_x: i32 = screen_w - fps_badge_w - 12;
+    const pop_box_w: i32 = 360;
+    const pop_box_x: i32 = fps_box_x - pop_box_w - 14;
+    return rl.Rectangle.init(
+        @as(f32, @floatFromInt(pop_box_x + 2)),
+        6.0,
+        72.0,
+        32.0,
+    );
+}
 
 fn fmt(comptime format: []const u8, args: anytype) [:0]const u8 {
     const RingSize = 16;
@@ -827,6 +857,8 @@ fn initGame() void {
     placing_building = null;
     selected_building = null;
     hovered_building = null;
+    show_controls_dialog = false;
+    is_paused = false;
 
     citizen_mgr.init(@intCast(@min(STARTING_POPULATION, MAX_CITIZENS)));
     total_citizens = citizen_mgr.count;
@@ -1067,7 +1099,10 @@ pub fn main() !void {
         // PAUSE MENU / ESC Key handling
         // --------------------------------------------------------------------
         if (rl.isKeyPressed(.escape)) {
-            if (placing_building != null) {
+            if (show_controls_dialog) {
+                show_controls_dialog = false;
+                is_paused = false;
+            } else if (placing_building != null) {
                 placing_building = null;
             } else if (build_menu_open) {
                 build_menu_open = false;
@@ -1178,18 +1213,16 @@ pub fn main() !void {
             const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
             const in_top_bar = mouse_pos.y < 48.0;
-            const in_bottom_bar = mouse_pos.y > sh_f - 32.0;
 
-            const build_btn_w: f32 = 126.0;
-            const build_btn_h: f32 = 36.0;
-            const build_btn_x: f32 = 16.0;
-            const build_btn_y: f32 = sh_f - 30.0 - build_btn_h - 10.0;
-            const build_btn_rect = rl.Rectangle.init(build_btn_x, build_btn_y, build_btn_w, build_btn_h);
+            const build_btn_rect = getBuildBtnRect(sh_f);
             const in_build_btn = rl.checkCollisionPointRec(mouse_pos, build_btn_rect);
 
+            const ctrl_btn_rect = getControlsBtnRect(sw_f, sh_f);
+            const in_ctrl_btn = rl.checkCollisionPointRec(mouse_pos, ctrl_btn_rect);
+
             const strip_h: f32 = 148.0;
-            const strip_y: f32 = sh_f - 30.0 - strip_h;
-            const in_build_strip = build_menu_open and mouse_pos.y >= strip_y and mouse_pos.y <= (sh_f - 30.0);
+            const strip_y: f32 = sh_f - strip_h;
+            const in_build_strip = build_menu_open and mouse_pos.y >= strip_y and mouse_pos.y <= sh_f;
 
             const gen_dialog_w: f32 = 270.0;
             const gen_dialog_h: f32 = 220.0;
@@ -1220,7 +1253,10 @@ pub fn main() !void {
                 }
             }
 
-            const in_ui = in_top_bar or in_bottom_bar or in_generator_dialog or in_active_card or in_build_btn or in_build_strip or in_building_dialog;
+            const pop_pill_rect = getPopPillRect(rl.getScreenWidth());
+            const pop_hovered = rl.checkCollisionPointRec(mouse_pos, pop_pill_rect);
+
+            const in_ui = in_top_bar or in_generator_dialog or in_active_card or in_build_btn or in_ctrl_btn or in_build_strip or in_building_dialog;
 
             const ray = rl.getScreenToWorldRay(mouse_pos, camera);
             ground_hit = getMouseGroundIntersection(ray);
@@ -1273,7 +1309,7 @@ pub fn main() !void {
             // Set cursor style
             if (placing_building != null) {
                 rl.setMouseCursor(if (placement_check.valid) .crosshair else .not_allowed);
-            } else if (hovered_resource != null or hovered_generator or hovered_building != null or in_build_btn) {
+            } else if (hovered_resource != null or hovered_generator or hovered_building != null or in_build_btn or in_ctrl_btn or pop_hovered) {
                 rl.setMouseCursor(.pointing_hand);
             } else {
                 rl.setMouseCursor(.default);
@@ -1282,7 +1318,7 @@ pub fn main() !void {
             // Handle Left Mouse Click
             if (rl.isMouseButtonPressed(.left)) {
                 if (placing_building) |btype| {
-                    if (!in_top_bar and !in_bottom_bar) {
+                    if (!in_top_bar and !in_build_btn and !in_ctrl_btn) {
                         if (snapped_grid) |snapped| {
                             if (placement_check.valid) {
                                 stockpiles[@intFromEnum(Resource.wood)] -= btype.woodCost();
@@ -1308,7 +1344,12 @@ pub fn main() !void {
                         }
                     }
                 } else {
-                    if (in_build_btn) {
+                    if (in_ctrl_btn) {
+                        is_paused = true;
+                        show_controls_dialog = true;
+                        build_menu_open = false;
+                        placing_building = null;
+                    } else if (in_build_btn) {
                         build_menu_open = !build_menu_open;
                         if (build_menu_open) {
                             selected_resource = null;
@@ -1522,8 +1563,10 @@ pub fn main() !void {
         // 3. 2D HUD & Interactive Management UI
         drawHUD(warm_count, cold_count, current_cached_ui, camera, mouse_pos, placement_check);
 
-        // 4. Pause Menu Modal Overlay (if paused)
-        if (is_paused) {
+        // 4. Modal Dialogs (Controls Dialog or Pause Menu)
+        if (show_controls_dialog) {
+            drawControlsDialog();
+        } else if (is_paused) {
             drawPauseMenu();
         }
     }
@@ -2164,15 +2207,11 @@ fn drawBuildingDialog(sw_f: f32) void {
 fn drawBuildUI(mouse_pos: rl.Vector2) void {
     const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
     const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
-    const bot_bar_h: f32 = 30.0;
 
     // 1. Build Button (Bottom-Left)
-    const btn_w: f32 = 126.0;
-    const btn_h: f32 = 36.0;
-    const btn_x: f32 = 16.0;
-    const btn_y: f32 = sh - bot_bar_h - btn_h - 10.0;
-
-    const btn_rect = rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h);
+    const btn_rect = getBuildBtnRect(sh);
+    const btn_x = btn_rect.x;
+    const btn_y = btn_rect.y;
     const btn_hovered = rl.checkCollisionPointRec(mouse_pos, btn_rect);
 
     const btn_bg = if (build_menu_open)
@@ -2206,7 +2245,7 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
     // 2. Build Strip (Bottom Drawer)
     if (build_menu_open) {
         const strip_h: f32 = 148.0;
-        const strip_y: f32 = sh - bot_bar_h - strip_h;
+        const strip_y: f32 = sh - strip_h;
         const strip_rect = rl.Rectangle.init(0, strip_y, sw, strip_h);
 
         // Dark metal background
@@ -2296,6 +2335,41 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
     }
 }
 
+fn drawControlsButton(mouse_pos: rl.Vector2) void {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+    const btn_rect = getControlsBtnRect(sw, sh);
+    const btn_hovered = rl.checkCollisionPointRec(mouse_pos, btn_rect);
+
+    const btn_bg = if (btn_hovered)
+        rl.Color.init(42, 52, 68, 255)
+    else
+        rl.Color.init(22, 28, 38, 245);
+
+    const btn_border = if (btn_hovered)
+        rl.Color.init(245, 195, 65, 255)
+    else
+        rl.Color.init(90, 110, 135, 255);
+
+    const btn_text_color = if (btn_hovered)
+        rl.Color.init(255, 225, 120, 255)
+    else
+        rl.Color.init(220, 230, 240, 255);
+
+    rl.drawRectangleRounded(btn_rect, 0.25, 6, btn_bg);
+    rl.drawRectangleRoundedLinesEx(btn_rect, 0.25, 6, if (btn_hovered) 2.0 else 1.2, btn_border);
+
+    const label = "Controls";
+    const tw = rl.measureText(label, 14);
+    rl.drawText(
+        label,
+        @intFromFloat(btn_rect.x + (btn_rect.width - @as(f32, @floatFromInt(tw))) / 2.0),
+        @intFromFloat(btn_rect.y + 11.0),
+        14,
+        btn_text_color,
+    );
+}
+
 fn drawPlacementTooltip(mouse_pos: rl.Vector2, check: PlacementCheck) void {
     const tip_x: i32 = @as(i32, @intFromFloat(mouse_pos.x)) + 20;
     const tip_y: i32 = @as(i32, @intFromFloat(mouse_pos.y)) + 16;
@@ -2331,9 +2405,109 @@ fn drawPlacementTooltip(mouse_pos: rl.Vector2, check: PlacementCheck) void {
     );
 }
 
+fn drawPopulationPopover(x: f32, y: f32) void {
+    var resource_workers: i32 = 0;
+    for (workers_assigned) |w| {
+        resource_workers += w;
+    }
+    var construction_workers: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .constructing) {
+            construction_workers += b.active_builders;
+        }
+    }
+    const total_working: i32 = resource_workers + construction_workers;
+    const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
+
+    const pop_w: f32 = 236.0;
+    const pop_h: f32 = 160.0;
+
+    // Subtle drop shadow
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(x + 3.0, y + 3.0, pop_w, pop_h),
+        0.08,
+        6,
+        rl.Color.init(5, 8, 12, 160),
+    );
+
+    // Popover body
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(x, y, pop_w, pop_h),
+        0.08,
+        6,
+        rl.Color.init(20, 24, 32, 252),
+    );
+    rl.drawRectangleRoundedLinesEx(
+        rl.Rectangle.init(x, y, pop_w, pop_h),
+        0.08,
+        6,
+        1.5,
+        rl.Color.init(80, 105, 138, 255),
+    );
+
+    // Header
+    rl.drawRectangle(@intFromFloat(x + 12.0), @intFromFloat(y + 11.0), 8, 14, rl.Color.init(245, 195, 65, 255));
+    rl.drawText("CITIZEN WORKFORCE", @intFromFloat(x + 26.0), @intFromFloat(y + 10.0), 13, rl.Color.init(245, 205, 70, 255));
+
+    // Separator line
+    rl.drawLine(
+        @intFromFloat(x + 12.0),
+        @intFromFloat(y + 30.0),
+        @intFromFloat(x + pop_w - 12.0),
+        @intFromFloat(y + 30.0),
+        rl.Color.init(45, 55, 70, 255),
+    );
+
+    // Working Citizens row
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 45.0), 4.0, rl.Color.init(80, 220, 130, 255));
+    rl.drawText("Working Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 38.0), 13, rl.Color.init(220, 230, 240, 255));
+    const work_val = fmt("{d}", .{total_working});
+    const work_val_w = rl.measureText(work_val, 13);
+    rl.drawText(work_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(work_val_w))), @intFromFloat(y + 38.0), 13, rl.Color.init(100, 235, 140, 255));
+
+    // Breakdown details
+    rl.drawText(
+        fmt("  Gatherers: {d}  |  Builders: {d}", .{ resource_workers, construction_workers }),
+        @intFromFloat(x + 24.0),
+        @intFromFloat(y + 58.0),
+        11,
+        rl.Color.init(140, 165, 190, 255),
+    );
+
+    // Idle Citizens row
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 85.0), 4.0, rl.Color.init(245, 185, 65, 255));
+    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 78.0), 13, rl.Color.init(220, 230, 240, 255));
+    const idle_val = fmt("{d}", .{total_idle});
+    const idle_val_w = rl.measureText(idle_val, 13);
+    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 78.0), 13, rl.Color.init(255, 215, 80, 255));
+
+    // Idle explanation
+    rl.drawText(
+        "  Available for new tasks & building",
+        @intFromFloat(x + 24.0),
+        @intFromFloat(y + 98.0),
+        11,
+        rl.Color.init(140, 165, 190, 255),
+    );
+
+    // Separator line
+    rl.drawLine(
+        @intFromFloat(x + 12.0),
+        @intFromFloat(y + 118.0),
+        @intFromFloat(x + pop_w - 12.0),
+        @intFromFloat(y + 118.0),
+        rl.Color.init(45, 55, 70, 255),
+    );
+
+    // Total row
+    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 129.0), 12, rl.Color.init(180, 195, 210, 255));
+    const tot_val = fmt("{d}", .{total_citizens});
+    const tot_val_w = rl.measureText(tot_val, 12);
+    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 129.0), 12, rl.Color.white);
+}
+
 fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.Camera3D, mouse_pos: rl.Vector2, placement_check: PlacementCheck) void {
     const screen_w = rl.getScreenWidth();
-    const screen_h = rl.getScreenHeight();
 
     // ------------------------------------------------------------------------
     // 3D FLOATING WORLD LABELS
@@ -2422,12 +2596,20 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
     else
         rl.Color.init(255, 120, 100, 255);
 
+    const pop_pill_rect = getPopPillRect(screen_w);
+    const pop_hovered = rl.checkCollisionPointRec(mouse_pos, pop_pill_rect);
+
+    if (pop_hovered) {
+        rl.drawRectangleRounded(pop_pill_rect, 0.25, 4, rl.Color.init(42, 54, 72, 220));
+        rl.drawRectangleRoundedLinesEx(pop_pill_rect, 0.25, 4, 1.2, rl.Color.init(245, 195, 65, 220));
+    }
+
     _ = rl.drawText(
         fmt("Pop: {d}", .{total_citizens}),
         pop_box_x + 8,
         14,
         14,
-        rl.Color.init(240, 245, 250, 255),
+        if (pop_hovered) rl.Color.init(255, 225, 120, 255) else rl.Color.init(240, 245, 250, 255),
     );
 
     _ = rl.drawText(
@@ -2512,18 +2694,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         );
     }
 
-    // ------------------------------------------------------------------------
-    // IN-WORLD INTERACTION TIP
-    // ------------------------------------------------------------------------
-    if (selected_resource == null and !selected_generator and selected_building == null and !build_menu_open and placing_building == null) {
-        rl.drawText(
-            "TIP: Press [B] or click Build to construct Houses | Click any resource pile or building to inspect",
-            18,
-            @intFromFloat(@as(f32, @floatFromInt(screen_h)) - 55.0),
-            13,
-            rl.Color.init(140, 165, 185, 220),
-        );
-    }
+
 
     // ------------------------------------------------------------------------
     // HEAT GENERATOR DIALOG
@@ -2648,30 +2819,23 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
     drawBuildingDialog(@as(f32, @floatFromInt(screen_w)));
 
     // ------------------------------------------------------------------------
-    // BOTTOM BAR: KEYBINDINGS HINT
-    // ------------------------------------------------------------------------
-    const bot_h: f32 = 30.0;
-    const bot_y = @as(f32, @floatFromInt(screen_h)) - bot_h;
-    rl.drawRectangle(0, @intFromFloat(bot_y), screen_w, @intFromFloat(bot_h), rl.Color.init(18, 22, 28, 220));
-
-    rl.drawText(
-        "CONTROLS: [B] Build Menu  |  [Click Building/Pile/Generator] Select & Manage  |  [W/A/S/D / RMB Drag] Pan  |  [Wheel] Zoom  |  [ESC] Pause",
-        18,
-        @intFromFloat(bot_y + 8),
-        13,
-        rl.Color.init(180, 195, 210, 255),
-    );
-
-    // ------------------------------------------------------------------------
-    // BUILD BUTTON & BUILD STRIP
+    // BUILD UI & CONTROLS BUTTON
     // ------------------------------------------------------------------------
     drawBuildUI(mouse_pos);
+    drawControlsButton(mouse_pos);
 
     // ------------------------------------------------------------------------
     // PLACEMENT TOOLTIP (When in placement mode)
     // ------------------------------------------------------------------------
     if (placing_building != null) {
         drawPlacementTooltip(mouse_pos, placement_check);
+    }
+
+    // ------------------------------------------------------------------------
+    // POPULATION POPOVER (Hover on Pop badge in top bar)
+    // ------------------------------------------------------------------------
+    if (pop_hovered) {
+        drawPopulationPopover(pop_pill_rect.x - 10.0, 48.0);
     }
 }
 
@@ -2687,7 +2851,7 @@ fn drawPauseMenu() void {
     rl.drawRectangle(0, 0, screen_w, screen_h, rl.Color.init(10, 14, 20, 200));
 
     const modal_w: f32 = 340.0;
-    const modal_h: f32 = 230.0;
+    const modal_h: f32 = 280.0;
     const modal_x: f32 = (@as(f32, @floatFromInt(screen_w)) - modal_w) / 2.0;
     const modal_y: f32 = (@as(f32, @floatFromInt(screen_h)) - modal_h) / 2.0;
 
@@ -2712,7 +2876,7 @@ fn drawPauseMenu() void {
     rl.drawText(
         title,
         @intFromFloat(modal_x + (modal_w - @as(f32, @floatFromInt(title_w))) / 2.0),
-        @intFromFloat(modal_y + 26),
+        @intFromFloat(modal_y + 24),
         22,
         rl.Color.init(245, 205, 70, 255),
     );
@@ -2723,7 +2887,7 @@ fn drawPauseMenu() void {
     rl.drawText(
         subtitle,
         @intFromFloat(modal_x + (modal_w - @as(f32, @floatFromInt(sub_w))) / 2.0),
-        @intFromFloat(modal_y + 56),
+        @intFromFloat(modal_y + 52),
         13,
         rl.Color.init(160, 175, 190, 255),
     );
@@ -2731,9 +2895,9 @@ fn drawPauseMenu() void {
     // Separator line
     rl.drawLine(
         @intFromFloat(modal_x + 30),
-        @intFromFloat(modal_y + 78),
+        @intFromFloat(modal_y + 74),
         @intFromFloat(modal_x + modal_w - 30),
-        @intFromFloat(modal_y + 78),
+        @intFromFloat(modal_y + 74),
         rl.Color.init(50, 62, 78, 255),
     );
 
@@ -2743,12 +2907,167 @@ fn drawPauseMenu() void {
     const btn_x: f32 = modal_x + (modal_w - btn_w) / 2.0;
 
     // Continue Button
-    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 98, btn_w, btn_h), "CONTINUE")) {
+    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 92, btn_w, btn_h), "CONTINUE")) {
         is_paused = false;
     }
 
+    // Controls Button
+    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 144, btn_w, btn_h), "CONTROLS")) {
+        show_controls_dialog = true;
+    }
+
     // Quit Button
-    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 152, btn_w, btn_h), "QUIT GAME")) {
+    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 196, btn_w, btn_h), "QUIT GAME")) {
         should_quit = true;
+    }
+}
+
+// ============================================================================
+// CONTROLS DIALOG MODAL
+// ============================================================================
+
+fn drawControlSectionHeader(x: f32, y: f32, title: [:0]const u8) void {
+    rl.drawRectangle(@intFromFloat(x), @intFromFloat(y + 2), 4, 12, rl.Color.init(245, 195, 65, 255));
+    rl.drawText(title, @intFromFloat(x + 10), @intFromFloat(y), 12, rl.Color.init(245, 205, 80, 255));
+}
+
+fn drawControlRow(x: f32, y: f32, key_badge: [:0]const u8, description: [:0]const u8) void {
+    const badge_w: f32 = 142.0;
+    const badge_h: f32 = 18.0;
+    const badge_rect = rl.Rectangle.init(x, y - 1.0, badge_w, badge_h);
+
+    rl.drawRectangleRounded(badge_rect, 0.3, 4, rl.Color.init(34, 42, 54, 255));
+    rl.drawRectangleRoundedLinesEx(badge_rect, 0.3, 4, 1.0, rl.Color.init(70, 90, 118, 255));
+    rl.drawText(key_badge, @intFromFloat(x + 6.0), @intFromFloat(y + 2.0), 11, rl.Color.init(225, 238, 252, 255));
+
+    rl.drawText(description, @intFromFloat(x + badge_w + 10.0), @intFromFloat(y + 2.0), 11, rl.Color.init(180, 195, 212, 255));
+}
+
+fn drawControlsDialog() void {
+    const sw_f = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
+
+    // Dark semi-transparent background overlay
+    rl.drawRectangle(0, 0, rl.getScreenWidth(), rl.getScreenHeight(), rl.Color.init(10, 14, 20, 215));
+
+    const modal_w: f32 = 750.0;
+    const modal_h: f32 = 425.0;
+    const modal_x: f32 = (sw_f - modal_w) / 2.0;
+    const modal_y: f32 = (sh_f - modal_h) / 2.0;
+
+    // Modal background card with subtle shadow
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(modal_x + 3.0, modal_y + 3.0, modal_w, modal_h),
+        0.04,
+        8,
+        rl.Color.init(5, 7, 10, 140),
+    );
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(modal_x, modal_y, modal_w, modal_h),
+        0.04,
+        8,
+        rl.Color.init(22, 26, 36, 255),
+    );
+    rl.drawRectangleRoundedLinesEx(
+        rl.Rectangle.init(modal_x, modal_y, modal_w, modal_h),
+        0.04,
+        8,
+        2.0,
+        rl.Color.init(80, 105, 135, 255),
+    );
+
+    // Header accent bar
+    rl.drawRectangle(@intFromFloat(modal_x + 24), @intFromFloat(modal_y + 18), 10, 22, rl.Color.init(245, 195, 65, 255));
+
+    // Title
+    rl.drawText("GAME CONTROLS", @intFromFloat(modal_x + 42), @intFromFloat(modal_y + 16), 20, rl.Color.init(245, 205, 70, 255));
+    rl.drawText("Quick command reference for city management", @intFromFloat(modal_x + 42), @intFromFloat(modal_y + 38), 12, rl.Color.init(150, 170, 195, 255));
+
+    // Close button [x]
+    if (rg.button(rl.Rectangle.init(modal_x + modal_w - 38, modal_y + 16, 24, 24), "x")) {
+        show_controls_dialog = false;
+        is_paused = false;
+    }
+
+    // Divider line
+    rl.drawLine(
+        @intFromFloat(modal_x + 24),
+        @intFromFloat(modal_y + 60),
+        @intFromFloat(modal_x + modal_w - 24),
+        @intFromFloat(modal_y + 60),
+        rl.Color.init(48, 58, 74, 255),
+    );
+
+    // Vertical divider line between column 1 and column 2
+    rl.drawLine(
+        @intFromFloat(modal_x + 370),
+        @intFromFloat(modal_y + 70),
+        @intFromFloat(modal_x + 370),
+        @intFromFloat(modal_y + modal_h - 60),
+        rl.Color.init(40, 50, 65, 255),
+    );
+
+    // COLUMN 1: Camera Navigation & Building
+    const col1_x = modal_x + 24.0;
+    var y1: f32 = modal_y + 72.0;
+
+    drawControlSectionHeader(col1_x, y1, "CAMERA & NAVIGATION");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "W / A / S / D / Arrows", "Pan camera across snow");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "RMB Drag", "Smooth mouse camera pan");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "Mouse Wheel", "Zoom in / out");
+    y1 += 30.0;
+
+    drawControlSectionHeader(col1_x, y1, "BUILDING & CONSTRUCTION");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "B / Build Button", "Open or close Build Menu");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "LMB (House)", "Place 2x2 House (20 Wood)");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "Shift + LMB", "Place multiple houses");
+    y1 += 22.0;
+    drawControlRow(col1_x, y1, "RMB / ESC", "Cancel placement mode");
+
+    // COLUMN 2: Settlement Management & System
+    const col2_x = modal_x + 386.0;
+    var y2: f32 = modal_y + 72.0;
+
+    drawControlSectionHeader(col2_x, y2, "SETTLEMENT MANAGEMENT");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "Click Resource Pile", "Assign or remove workers");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "Click Heat Generator", "Toggle heating ON / OFF");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "Click Building", "Inspect shelter & builders");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "Hover Population", "View working vs idle citizens");
+    y2 += 30.0;
+
+    drawControlSectionHeader(col2_x, y2, "SYSTEM & SHORTCUTS");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "ESC", "Pause / Close open dialogs");
+    y2 += 22.0;
+    drawControlRow(col2_x, y2, "Controls Button", "Open this guide anytime");
+
+    // Bottom divider line
+    rl.drawLine(
+        @intFromFloat(modal_x + 24),
+        @intFromFloat(modal_y + modal_h - 52),
+        @intFromFloat(modal_x + modal_w - 24),
+        @intFromFloat(modal_y + modal_h - 52),
+        rl.Color.init(48, 58, 74, 255),
+    );
+
+    // Resume Button
+    const btn_w: f32 = 180.0;
+    const btn_h: f32 = 32.0;
+    const btn_x: f32 = modal_x + (modal_w - btn_w) / 2.0;
+    const btn_y: f32 = modal_y + modal_h - 42.0;
+
+    if (rg.button(rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h), "RESUME GAME")) {
+        show_controls_dialog = false;
+        is_paused = false;
     }
 }
