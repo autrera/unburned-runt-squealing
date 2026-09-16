@@ -3,7 +3,11 @@ const rlz = @import("raylib_zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Prioritize performance, safety, or binary size",
+    ) orelse .ReleaseFast;
 
     // Allow overriding raylib platform via `-Dplatform` and `-Dopengl_version`.
     // Default to windowed desktop (GLFW + OpenGL 3.3) so `make` / `zig build`
@@ -41,6 +45,7 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "raylib_quickstart",
         .root_module = exe_mod,
+        .use_lld = false,
     });
 
     // Automatically configure include and library paths for user-space / WSL2

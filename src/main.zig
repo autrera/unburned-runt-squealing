@@ -159,21 +159,301 @@ pub const CitizenRole = enum {
     }
 };
 
-pub const Citizen = struct {
-    position: rl.Vector3,
-    target_pos: rl.Vector3,
-    role: CitizenRole,
-    is_warm: bool,
-    wander_timer: f32,
-    speed: f32,
+pub const MAX_CITIZENS: usize = 1024;
+pub const SIMD_WIDTH: usize = 4;
+pub const Vec4f = @Vector(SIMD_WIDTH, f32);
+pub const Vec4b = @Vector(SIMD_WIDTH, bool);
+pub const Vec4i = @Vector(SIMD_WIDTH, i32);
+
+pub const MAX_SMOKE_PARTICLES: usize = 32;
+
+/// High-performance Struct-of-Arrays (SoA) for citizens.
+/// Coordinates are aligned to 16 bytes for SIMD operations.
+pub const CitizenManager = struct {
+    pos_x: [MAX_CITIZENS]f32 align(16) = undefined,
+    pos_z: [MAX_CITIZENS]f32 align(16) = undefined,
+    target_x: [MAX_CITIZENS]f32 align(16) = undefined,
+    target_z: [MAX_CITIZENS]f32 align(16) = undefined,
+    speed: [MAX_CITIZENS]f32 align(16) = undefined,
+    wander_timer: [MAX_CITIZENS]f32 align(16) = undefined,
+    role: [MAX_CITIZENS]CitizenRole = undefined,
+    is_warm: [MAX_CITIZENS]bool = undefined,
+    count: usize = 0,
+
+    // O(1) worker allocation index stacks
+    idle_ids: [MAX_CITIZENS]u16 = undefined,
+    idle_count: usize = 0,
+    assigned_ids: [4][MAX_CITIZENS]u16 = undefined,
+    assigned_counts: [4]usize = .{ 0, 0, 0, 0 },
+
+    pub fn init(self: *CitizenManager, pop: usize) void {
+        const capped_pop = @min(pop, MAX_CITIZENS);
+        self.count = capped_pop;
+        self.idle_count = 0;
+        self.assigned_counts = .{ 0, 0, 0, 0 };
+
+        for (0..capped_pop) |i| {
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+            const px = @cos(angle) * dist;
+            const pz = @sin(angle) * dist;
+
+            self.pos_x[i] = px;
+            self.pos_z[i] = pz;
+            self.target_x[i] = px;
+            self.target_z[i] = pz;
+            self.speed[i] = CITIZEN_WALK_SPEED * randomFloat(0.85, 1.15);
+            self.wander_timer[i] = randomFloat(1.0, 4.0);
+            self.role[i] = .idle;
+            self.is_warm[i] = generator_active;
+
+            self.idle_ids[self.idle_count] = @intCast(i);
+            self.idle_count += 1;
+        }
+
+        var i = capped_pop;
+        while (i < MAX_CITIZENS) : (i += 1) {
+            self.pos_x[i] = 0.0;
+            self.pos_z[i] = 0.0;
+            self.target_x[i] = 0.0;
+            self.target_z[i] = 0.0;
+            self.speed[i] = 0.0;
+            self.wander_timer[i] = 999.0;
+            self.role[i] = .idle;
+            self.is_warm[i] = false;
+        }
+    }
+
+    pub fn getIdleCount(self: *const CitizenManager) usize {
+        return self.idle_count;
+    }
+
+    pub fn getAssignedCount(self: *const CitizenManager, res: Resource) usize {
+        return self.assigned_counts[@intFromEnum(res)];
+    }
+
+    pub fn assign(self: *CitizenManager, res: Resource, delta: i32) void {
+        const res_idx = @intFromEnum(res);
+        if (delta > 0) {
+            const to_add: usize = @intCast(@min(@as(i32, @intCast(self.idle_count)), delta));
+            for (0..to_add) |_| {
+                if (self.idle_count == 0) break;
+                self.idle_count -= 1;
+                const id = self.idle_ids[self.idle_count];
+
+                self.assigned_ids[res_idx][self.assigned_counts[res_idx]] = id;
+                self.assigned_counts[res_idx] += 1;
+
+                const role = CitizenRole.fromResource(res);
+                self.role[id] = role;
+                const target = pickTargetForRole(role);
+                self.target_x[id] = target.x;
+                self.target_z[id] = target.z;
+                self.wander_timer[id] = randomFloat(2.0, 5.5);
+            }
+        } else if (delta < 0) {
+            const cur_assigned = self.assigned_counts[res_idx];
+            const to_remove: usize = @intCast(@min(@as(i32, @intCast(cur_assigned)), -delta));
+            for (0..to_remove) |_| {
+                if (self.assigned_counts[res_idx] == 0) break;
+                self.assigned_counts[res_idx] -= 1;
+                const id = self.assigned_ids[res_idx][self.assigned_counts[res_idx]];
+
+                self.idle_ids[self.idle_count] = id;
+                self.idle_count += 1;
+
+                self.role[id] = .idle;
+                const target = pickTargetForRole(.idle);
+                self.target_x[id] = target.x;
+                self.target_z[id] = target.z;
+                self.wander_timer[id] = randomFloat(2.0, 5.5);
+            }
+        }
+    }
+
+    pub fn update(self: *CitizenManager, dt: f32, is_gen_active: bool) struct { warm: i32, cold: i32 } {
+        var warm_sum: i32 = 0;
+        var cold_sum: i32 = 0;
+        const heat_radius_sq = GENERATOR_HEAT_RADIUS * GENERATOR_HEAT_RADIUS;
+        const heat_rad_sq_vec: Vec4f = @splat(heat_radius_sq);
+        const ones: Vec4i = @splat(1);
+        const zeros: Vec4i = @splat(0);
+
+        var i: usize = 0;
+        while (i + SIMD_WIDTH <= self.count) : (i += SIMD_WIDTH) {
+            const px_ptr: *align(16) [SIMD_WIDTH]f32 = @alignCast(self.pos_x[i..][0..SIMD_WIDTH]);
+            const pz_ptr: *align(16) [SIMD_WIDTH]f32 = @alignCast(self.pos_z[i..][0..SIMD_WIDTH]);
+            const tx_ptr: *align(16) [SIMD_WIDTH]f32 = @alignCast(self.target_x[i..][0..SIMD_WIDTH]);
+            const tz_ptr: *align(16) [SIMD_WIDTH]f32 = @alignCast(self.target_z[i..][0..SIMD_WIDTH]);
+            const sp_ptr: *align(16) [SIMD_WIDTH]f32 = @alignCast(self.speed[i..][0..SIMD_WIDTH]);
+
+            var px: Vec4f = px_ptr.*;
+            var pz: Vec4f = pz_ptr.*;
+            const tx: Vec4f = tx_ptr.*;
+            const tz: Vec4f = tz_ptr.*;
+            const sp: Vec4f = sp_ptr.*;
+
+            // SIMD Warmth calculation (distance squared to (0,0))
+            if (is_gen_active) {
+                const dist_sq_gen = px * px + pz * pz;
+                const warm_mask: Vec4b = dist_sq_gen <= heat_rad_sq_vec;
+                self.is_warm[i..][0..SIMD_WIDTH].* = warm_mask;
+                const warm_ints = @select(i32, warm_mask, ones, zeros);
+                warm_sum += @reduce(.Add, warm_ints);
+            } else {
+                const false_mask: Vec4b = @splat(false);
+                self.is_warm[i..][0..SIMD_WIDTH].* = false_mask;
+            }
+
+            // SIMD Movement calculation
+            const dx = tx - px;
+            const dz = tz - pz;
+            const dist_sq = dx * dx + dz * dz;
+
+            inline for (0..SIMD_WIDTH) |lane| {
+                const d_sq = dist_sq[lane];
+                if (d_sq > 0.0625) {
+                    const dist = @sqrt(d_sq);
+                    const step = @min(dist, sp[lane] * dt);
+                    const inv_dist = 1.0 / dist;
+                    px[lane] += dx[lane] * inv_dist * step;
+                    pz[lane] += dz[lane] * inv_dist * step;
+                } else {
+                    self.wander_timer[i + lane] -= dt;
+                    if (self.wander_timer[i + lane] <= 0.0) {
+                        self.wander_timer[i + lane] = randomFloat(2.0, 5.5);
+                        const new_tgt = pickTargetForRole(self.role[i + lane]);
+                        self.target_x[i + lane] = new_tgt.x;
+                        self.target_z[i + lane] = new_tgt.z;
+                    }
+                }
+            }
+
+            px_ptr.* = px;
+            pz_ptr.* = pz;
+        }
+
+        // Remainder
+        while (i < self.count) : (i += 1) {
+            const px = self.pos_x[i];
+            const pz = self.pos_z[i];
+
+            if (is_gen_active) {
+                const dist_sq = px * px + pz * pz;
+                const w = dist_sq <= heat_radius_sq;
+                self.is_warm[i] = w;
+                if (w) warm_sum += 1;
+            } else {
+                self.is_warm[i] = false;
+            }
+
+            const dx = self.target_x[i] - px;
+            const dz = self.target_z[i] - pz;
+            const dist_sq = dx * dx + dz * dz;
+
+            if (dist_sq > 0.0625) {
+                const dist = @sqrt(dist_sq);
+                const step = @min(dist, self.speed[i] * dt);
+                const inv_dist = 1.0 / dist;
+                self.pos_x[i] += dx * inv_dist * step;
+                self.pos_z[i] += dz * inv_dist * step;
+            } else {
+                self.wander_timer[i] -= dt;
+                if (self.wander_timer[i] <= 0.0) {
+                    self.wander_timer[i] = randomFloat(2.0, 5.5);
+                    const new_tgt = pickTargetForRole(self.role[i]);
+                    self.target_x[i] = new_tgt.x;
+                    self.target_z[i] = new_tgt.z;
+                }
+            }
+        }
+
+        cold_sum = @as(i32, @intCast(self.count)) - warm_sum;
+        return .{ .warm = warm_sum, .cold = cold_sum };
+    }
 };
 
-pub const SmokeParticle = struct {
-    position: rl.Vector3,
-    velocity: rl.Vector3,
-    alpha: f32,
-    size: f32,
-    active: bool,
+/// High-performance Struct-of-Arrays (SoA) for smoke particles.
+pub const SmokeParticlesSoA = struct {
+    pos_x: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    pos_y: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    pos_z: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    vel_x: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    vel_y: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    vel_z: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    alpha: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    size: [MAX_SMOKE_PARTICLES]f32 align(16) = undefined,
+    active: [MAX_SMOKE_PARTICLES]bool = [_]bool{false} ** MAX_SMOKE_PARTICLES,
+    spawn_timer: f32 = 0.0,
+
+    pub fn init(self: *SmokeParticlesSoA) void {
+        for (0..MAX_SMOKE_PARTICLES) |i| {
+            self.active[i] = false;
+            self.alpha[i] = 0.0;
+        }
+        self.spawn_timer = 0.0;
+    }
+
+    pub fn update(self: *SmokeParticlesSoA, dt: f32, is_gen_active: bool) void {
+        if (is_gen_active) {
+            self.spawn_timer += dt;
+            if (self.spawn_timer >= 0.12) {
+                self.spawn_timer = 0.0;
+                for (0..MAX_SMOKE_PARTICLES) |i| {
+                    if (!self.active[i]) {
+                        self.active[i] = true;
+                        self.pos_x[i] = randomFloat(-0.2, 0.2);
+                        self.pos_y[i] = 11.2;
+                        self.pos_z[i] = randomFloat(-0.2, 0.2);
+                        self.vel_x[i] = randomFloat(-0.4, 0.4);
+                        self.vel_y[i] = randomFloat(2.5, 4.0);
+                        self.vel_z[i] = randomFloat(-0.4, 0.4);
+                        self.alpha[i] = 0.85;
+                        self.size[i] = randomFloat(0.4, 0.7);
+                        break;
+                    }
+                }
+            }
+        }
+
+        var i: usize = 0;
+        const dt_v: Vec4f = @splat(dt);
+        const alpha_decay_v: Vec4f = @splat(dt * 0.45);
+        const size_growth_v: Vec4f = @splat(dt * 0.5);
+
+        while (i + 4 <= MAX_SMOKE_PARTICLES) : (i += 4) {
+            const px_ptr: *align(16) [4]f32 = @alignCast(self.pos_x[i..][0..4]);
+            const py_ptr: *align(16) [4]f32 = @alignCast(self.pos_y[i..][0..4]);
+            const pz_ptr: *align(16) [4]f32 = @alignCast(self.pos_z[i..][0..4]);
+            const vx_ptr: *align(16) [4]f32 = @alignCast(self.vel_x[i..][0..4]);
+            const vy_ptr: *align(16) [4]f32 = @alignCast(self.vel_y[i..][0..4]);
+            const vz_ptr: *align(16) [4]f32 = @alignCast(self.vel_z[i..][0..4]);
+            const a_ptr: *align(16) [4]f32 = @alignCast(self.alpha[i..][0..4]);
+            const s_ptr: *align(16) [4]f32 = @alignCast(self.size[i..][0..4]);
+
+            px_ptr.* = px_ptr.* + vx_ptr.* * dt_v;
+            py_ptr.* = py_ptr.* + vy_ptr.* * dt_v;
+            pz_ptr.* = pz_ptr.* + vz_ptr.* * dt_v;
+            a_ptr.* = a_ptr.* - alpha_decay_v;
+            s_ptr.* = s_ptr.* + size_growth_v;
+
+            inline for (0..4) |lane| {
+                if (self.active[i + lane] and self.alpha[i + lane] <= 0.0) {
+                    self.active[i + lane] = false;
+                }
+            }
+        }
+    }
+
+    pub fn draw(self: *const SmokeParticlesSoA) void {
+        for (0..MAX_SMOKE_PARTICLES) |i| {
+            if (self.active[i]) {
+                const alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(self.alpha[i] * 255.0, 0.0, 255.0)));
+                const smoke_col = rl.Color.init(220, 225, 235, alpha_u8);
+                rl.drawSphereEx(.{ .x = self.pos_x[i], .y = self.pos_y[i], .z = self.pos_z[i] }, self.size[i], 4, 6, smoke_col);
+            }
+        }
+    }
 };
 
 // ============================================================================
@@ -183,10 +463,9 @@ pub const SmokeParticle = struct {
 var generator_active: bool = false;
 var stockpiles: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 var workers_assigned: [4]i32 = .{ 0, 0, 0, 0 }; // workers per Resource enum
-var citizens: [256]Citizen = undefined;
+var citizen_mgr: CitizenManager = .{};
+var smoke_soa: SmokeParticlesSoA = .{};
 var total_citizens: usize = 0;
-var smoke_particles: [32]SmokeParticle = undefined;
-var smoke_spawn_timer: f32 = 0.0;
 
 var selected_resource: ?Resource = null;
 var hovered_resource: ?Resource = null;
@@ -219,11 +498,7 @@ fn randomFloat(min: f32, max: f32) f32 {
 }
 
 fn getIdleCitizensCount() i32 {
-    var assigned: i32 = 0;
-    for (workers_assigned) |w| {
-        assigned += w;
-    }
-    return @as(i32, @intCast(total_citizens)) - assigned;
+    return @intCast(citizen_mgr.getIdleCount());
 }
 
 fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
@@ -261,64 +536,14 @@ fn initGame() void {
     selected_generator = false;
     hovered_generator = false;
 
-    total_citizens = @intCast(@min(STARTING_POPULATION, 256));
-    for (0..total_citizens) |i| {
-        const angle = randomFloat(0.0, std.math.pi * 2.0);
-        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
-        const initial_pos = rl.Vector3{
-            .x = @cos(angle) * dist,
-            .y = 0.0,
-            .z = @sin(angle) * dist,
-        };
-
-        citizens[i] = .{
-            .position = initial_pos,
-            .target_pos = initial_pos,
-            .role = .idle,
-            .is_warm = generator_active,
-            .wander_timer = randomFloat(1.0, 4.0),
-            .speed = CITIZEN_WALK_SPEED * randomFloat(0.85, 1.15),
-        };
-    }
-
-    for (&smoke_particles) |*p| {
-        p.active = false;
-    }
+    citizen_mgr.init(@intCast(@min(STARTING_POPULATION, MAX_CITIZENS)));
+    total_citizens = citizen_mgr.count;
+    smoke_soa.init();
 }
 
 fn assignWorkers(res: Resource, delta: i32) void {
-    const idx = @intFromEnum(res);
-    if (delta > 0) {
-        const available = getIdleCitizensCount();
-        const to_add = @min(delta, available);
-        if (to_add <= 0) return;
-
-        var added: i32 = 0;
-        for (citizens[0..total_citizens]) |*c| {
-            if (c.role == .idle) {
-                c.role = CitizenRole.fromResource(res);
-                c.target_pos = pickTargetForRole(c.role);
-                added += 1;
-                if (added >= to_add) break;
-            }
-        }
-        workers_assigned[idx] += added;
-    } else if (delta < 0) {
-        const to_remove = @min(-delta, workers_assigned[idx]);
-        if (to_remove <= 0) return;
-
-        var removed: i32 = 0;
-        const target_role = CitizenRole.fromResource(res);
-        for (citizens[0..total_citizens]) |*c| {
-            if (c.role == target_role) {
-                c.role = .idle;
-                c.target_pos = pickTargetForRole(c.role);
-                removed += 1;
-                if (removed >= to_remove) break;
-            }
-        }
-        workers_assigned[idx] -= removed;
-    }
+    citizen_mgr.assign(res, delta);
+    workers_assigned[@intFromEnum(res)] = @intCast(citizen_mgr.getAssignedCount(res));
 }
 
 fn tryToggleGenerator() void {
@@ -346,22 +571,23 @@ pub const PileUIBounds = struct {
     is_on_screen: bool,
 };
 
-fn getPileUIBounds(r: Resource, camera: rl.Camera3D) PileUIBounds {
-    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
-    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+pub const CachedSceneUI = struct {
+    piles: [4]PileUIBounds,
+    gen_base_screen: rl.Vector2,
+    gen_base_on_screen: bool,
+    gen_label_screen: rl.Vector2,
+    gen_label_rect: rl.Rectangle,
+    gen_label_on_screen: bool,
+};
+
+fn computePileUIBounds(r: Resource, camera: rl.Camera3D, selected: ?Resource, sw: f32, sh: f32) PileUIBounds {
     const p = r.position();
-
-    // Pile base on the snow ground (projected to screen)
     const base_screen = rl.getWorldToScreen(.{ .x = p.x, .y = 0.5, .z = p.z }, camera);
-
-    // Floating badge position above the pile
     const badge_screen = rl.getWorldToScreen(.{ .x = p.x, .y = PILE_LABEL_HEIGHT_OFFSET, .z = p.z }, camera);
 
-    // Is the badge in front of the camera and within the screen viewport margin?
     const on_screen = badge_screen.x >= -120 and badge_screen.x <= sw + 120 and
         badge_screen.y >= -120 and badge_screen.y <= sh + 120;
 
-    // Badge dimensions
     const badge_w: f32 = 175.0;
     const badge_h: f32 = 28.0;
     const badge_rect = rl.Rectangle.init(
@@ -371,20 +597,17 @@ fn getPileUIBounds(r: Resource, camera: rl.Camera3D) PileUIBounds {
         badge_h,
     );
 
-    // If this pile is selected, compute its on-pile worker management card rectangle
     var card_rect: ?rl.Rectangle = null;
-    if (selected_resource == r) {
+    if (selected == r) {
         const card_w: f32 = 250.0;
         const card_h: f32 = 175.0;
         var cx = badge_screen.x - card_w / 2.0;
         var cy = badge_screen.y - card_h - 14.0;
 
-        // If card would clip against the top status bar (y < 52), place below pile badge instead
         if (cy < 52.0) {
             cy = badge_screen.y + 22.0;
         }
 
-        // Clamp to stay inside visible viewport
         cx = std.math.clamp(cx, 16.0, sw - card_w - 16.0);
         cy = std.math.clamp(cy, 52.0, sh - card_h - 36.0);
 
@@ -399,8 +622,37 @@ fn getPileUIBounds(r: Resource, camera: rl.Camera3D) PileUIBounds {
     };
 }
 
-fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, camera: rl.Camera3D, ray: rl.Ray) bool {
-    const ui = getPileUIBounds(r, camera);
+fn computeCachedUI(camera: rl.Camera3D, selected: ?Resource) CachedSceneUI {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+    var res: CachedSceneUI = undefined;
+
+    inline for (std.meta.tags(Resource)) |r| {
+        res.piles[@intFromEnum(r)] = computePileUIBounds(r, camera, selected, sw, sh);
+    }
+
+    const gen_base_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 2.0, .z = 0.0 }, camera);
+    res.gen_base_screen = gen_base_screen;
+    res.gen_base_on_screen = gen_base_screen.x >= -100 and gen_base_screen.x <= sw + 100 and
+        gen_base_screen.y >= -100 and gen_base_screen.y <= sh + 100;
+
+    const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
+    res.gen_label_screen = gen_label_screen;
+    const label_w: f32 = 190.0;
+    const label_h: f32 = 28.0;
+    res.gen_label_rect = rl.Rectangle.init(
+        gen_label_screen.x - label_w / 2.0,
+        gen_label_screen.y - label_h / 2.0,
+        label_w,
+        label_h,
+    );
+    res.gen_label_on_screen = gen_label_screen.x > 30 and gen_label_screen.x < sw - 30 and
+        gen_label_screen.y > 45 and gen_label_screen.y < sh - 35;
+
+    return res;
+}
+
+fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, ui: PileUIBounds, ray: rl.Ray) bool {
     if (!ui.is_on_screen) return false;
 
     // 1. Hovering the floating badge
@@ -424,31 +676,16 @@ fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, camera: rl.Camera3D
     return false;
 }
 
-fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, camera: rl.Camera3D, ray: rl.Ray) bool {
-    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
-    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
-
+fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, cached: CachedSceneUI, ray: rl.Ray) bool {
     // 1. Hovering near the 2D screen projection of the Heat Generator base (height ~2.0)
-    const gen_base_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 2.0, .z = 0.0 }, camera);
-    if (gen_base_screen.x >= -100 and gen_base_screen.x <= sw + 100 and
-        gen_base_screen.y >= -100 and gen_base_screen.y <= sh + 100)
-    {
-        if (rl.Vector2.distance(mouse_pos, gen_base_screen) < 70.0) {
+    if (cached.gen_base_on_screen) {
+        if (rl.Vector2.distance(mouse_pos, cached.gen_base_screen) < 70.0) {
             return true;
         }
     }
 
     // 2. Hovering the floating badge of the Heat Generator (height ~12.0)
-    const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
-    const label_w: f32 = 190.0;
-    const label_h: f32 = 28.0;
-    const label_rect = rl.Rectangle.init(
-        gen_label_screen.x - label_w / 2.0,
-        gen_label_screen.y - label_h / 2.0,
-        label_w,
-        label_h,
-    );
-    if (rl.checkCollisionPointRec(mouse_pos, label_rect)) {
+    if (rl.checkCollisionPointRec(mouse_pos, cached.gen_label_rect)) {
         return true;
     }
 
@@ -493,6 +730,9 @@ pub fn main() !void {
         .fovy = 45.0,
         .projection = .perspective,
     };
+
+    var warm_count: i32 = 0;
+    var cold_count: i32 = 0;
 
     while (!rl.windowShouldClose() and !should_quit) {
         const dt = rl.getFrameTime();
@@ -588,11 +828,13 @@ pub fn main() !void {
                 mouse_pos.x >= gen_dialog_x and mouse_pos.x <= gen_dialog_x + gen_dialog_w and
                 mouse_pos.y >= gen_dialog_y and mouse_pos.y <= gen_dialog_y + gen_dialog_h;
 
+            // Precompute scene 2D projections ONCE per frame
+            const cached_ui = computeCachedUI(camera, selected_resource);
+
             // Check if mouse is inside the on-pile management card of the active pile
             var in_active_card: bool = false;
             if (selected_resource) |sel| {
-                const sel_ui = getPileUIBounds(sel, camera);
-                if (sel_ui.card_rect) |cr| {
+                if (cached_ui.piles[@intFromEnum(sel)].card_rect) |cr| {
                     if (rl.checkCollisionPointRec(mouse_pos, cr)) {
                         in_active_card = true;
                     }
@@ -601,16 +843,16 @@ pub fn main() !void {
 
             const ray = rl.getScreenToWorldRay(mouse_pos, camera);
 
-            // Detect hover over resource piles & Heat Generator
+            // Detect hover over resource piles & Heat Generator using cached projections
             hovered_resource = null;
             hovered_generator = false;
             if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
                 inline for (std.meta.tags(Resource)) |r| {
-                    if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
+                    if (isMouseOverPileTarget(r, mouse_pos, cached_ui.piles[@intFromEnum(r)], ray)) {
                         hovered_resource = r;
                     }
                 }
-                if (isMouseOverGeneratorTarget(mouse_pos, camera, ray)) {
+                if (isMouseOverGeneratorTarget(mouse_pos, cached_ui, ray)) {
                     hovered_generator = true;
                 }
             }
@@ -624,12 +866,10 @@ pub fn main() !void {
 
             // Handle Left Mouse Click (Pile Selection & Heat Generator Selection)
             if (rl.isMouseButtonPressed(.left)) {
-                // If clicked inside an active dialog/card, top bar, or bottom bar:
-                // Let the respective UI controls handle the click - do NOT alter selection!
                 if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
                     var clicked_pile: ?Resource = null;
                     inline for (std.meta.tags(Resource)) |r| {
-                        if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
+                        if (isMouseOverPileTarget(r, mouse_pos, cached_ui.piles[@intFromEnum(r)], ray)) {
                             clicked_pile = r;
                         }
                     }
@@ -637,7 +877,7 @@ pub fn main() !void {
                     if (clicked_pile) |p| {
                         selected_resource = p;
                         selected_generator = false;
-                    } else if (isMouseOverGeneratorTarget(mouse_pos, camera, ray)) {
+                    } else if (isMouseOverGeneratorTarget(mouse_pos, cached_ui, ray)) {
                         selected_generator = true;
                         selected_resource = null;
                     } else {
@@ -646,13 +886,6 @@ pub fn main() !void {
                         selected_generator = false;
                     }
                 }
-            }
-
-            // Set cursor style
-            if (hovered_resource != null) {
-                rl.setMouseCursor(.pointing_hand);
-            } else {
-                rl.setMouseCursor(.default);
             }
 
             // ----------------------------------------------------------------
@@ -690,76 +923,17 @@ pub fn main() !void {
                 }
             }
 
-            // 3. Citizens movement, wandering, and warmth calculation
-            for (citizens[0..total_citizens]) |*c| {
-                // Warmth calculation
-                if (generator_active) {
-                    const dist_to_gen = rl.Vector3.distance(c.position, .{ .x = 0, .y = 0, .z = 0 });
-                    c.is_warm = (dist_to_gen <= GENERATOR_HEAT_RADIUS);
-                } else {
-                    c.is_warm = false;
-                }
+            // 3. Citizens SIMD movement, wandering, and warmth calculation (Single pass SoA)
+            const citizen_stats = citizen_mgr.update(dt, generator_active);
+            warm_count = citizen_stats.warm;
+            cold_count = citizen_stats.cold;
 
-                // Movement towards target position
-                const diff = c.target_pos.subtract(c.position);
-                const dist = diff.length();
-                if (dist > 0.25) {
-                    const dir = diff.scale(1.0 / dist);
-                    const step = @min(dist, c.speed * dt);
-                    c.position = c.position.add(dir.scale(step));
-                } else {
-                    c.wander_timer -= dt;
-                    if (c.wander_timer <= 0.0) {
-                        c.wander_timer = randomFloat(2.0, 5.5);
-                        c.target_pos = pickTargetForRole(c.role);
-                    }
-                }
-            }
-
-            // 4. Generator smoke/steam particles
-            if (generator_active) {
-                smoke_spawn_timer += dt;
-                if (smoke_spawn_timer >= 0.12) {
-                    smoke_spawn_timer = 0.0;
-                    for (&smoke_particles) |*p| {
-                        if (!p.active) {
-                            p.active = true;
-                            p.position = .{
-                                .x = randomFloat(-0.2, 0.2),
-                                .y = 11.2,
-                                .z = randomFloat(-0.2, 0.2),
-                            };
-                            p.velocity = .{
-                                .x = randomFloat(-0.4, 0.4),
-                                .y = randomFloat(2.5, 4.0),
-                                .z = randomFloat(-0.4, 0.4),
-                            };
-                            p.alpha = 0.85;
-                            p.size = randomFloat(0.4, 0.7);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            for (&smoke_particles) |*p| {
-                if (p.active) {
-                    p.position = p.position.add(p.velocity.scale(dt));
-                    p.alpha -= dt * 0.45;
-                    p.size += dt * 0.5;
-                    if (p.alpha <= 0.0) {
-                        p.active = false;
-                    }
-                }
-            }
+            // 4. Generator smoke/steam particles (SIMD SoA)
+            smoke_soa.update(dt, generator_active);
         }
 
-        // Compute warm and cold citizens count for rendering
-        var warm_count: i32 = 0;
-        var cold_count: i32 = 0;
-        for (citizens[0..total_citizens]) |c| {
-            if (c.is_warm) warm_count += 1 else cold_count += 1;
-        }
+        // Cache UI for rendering HUD
+        const current_cached_ui = computeCachedUI(camera, selected_resource);
 
         // --------------------------------------------------------------------
         // DRAWING / RENDERING
@@ -793,49 +967,51 @@ pub fn main() !void {
         drawHeatGenerator(generator_active, selected_generator, hovered_generator);
 
         // Draw Smoke / Steam Particles
-        for (smoke_particles) |p| {
-            if (p.active) {
-                const smoke_col = rl.Color.init(220, 225, 235, @intFromFloat(std.math.clamp(p.alpha * 255.0, 0.0, 255.0)));
-                rl.drawSphere(p.position, p.size, smoke_col);
-            }
-        }
+        smoke_soa.draw();
 
         // Draw The 4 Infinite Resource Piles
         drawResourcePiles(selected_resource, hovered_resource);
 
-        // Draw Citizens (Minimal 3D figures: body rectangle + head sphere)
-        for (citizens[0..total_citizens]) |c| {
-            const body_color = if (c.is_warm) COLOR_CITIZEN_WARM else COLOR_CITIZEN_COLD;
-            const head_color = if (c.is_warm) rl.Color.init(252, 220, 195, 255) else rl.Color.init(180, 208, 230, 255);
-
-            // Citizen body (3D rectangle)
+        // Draw Citizens in Batches (Eliminates 240+ batch flushes to GPU)
+        // Pass 1: Citizen bodies (RL_TRIANGLES)
+        for (0..citizen_mgr.count) |i| {
+            const body_color = if (citizen_mgr.is_warm[i]) COLOR_CITIZEN_WARM else COLOR_CITIZEN_COLD;
             rl.drawCube(
-                .{ .x = c.position.x, .y = c.position.y + 0.45, .z = c.position.z },
+                .{ .x = citizen_mgr.pos_x[i], .y = 0.45, .z = citizen_mgr.pos_z[i] },
                 0.48,
                 0.9,
                 0.48,
                 body_color,
             );
+        }
+
+        // Pass 2: Citizen heads (RL_TRIANGLES - low-poly sphere with 4 rings and 6 slices)
+        for (0..citizen_mgr.count) |i| {
+            const head_color = if (citizen_mgr.is_warm[i]) rl.Color.init(252, 220, 195, 255) else rl.Color.init(180, 208, 230, 255);
+            rl.drawSphereEx(
+                .{ .x = citizen_mgr.pos_x[i], .y = 1.05, .z = citizen_mgr.pos_z[i] },
+                0.24,
+                4,
+                6,
+                head_color,
+            );
+        }
+
+        // Pass 3: Citizen wireframe accents (RL_LINES)
+        for (0..citizen_mgr.count) |i| {
             rl.drawCubeWires(
-                .{ .x = c.position.x, .y = c.position.y + 0.45, .z = c.position.z },
+                .{ .x = citizen_mgr.pos_x[i], .y = 0.45, .z = citizen_mgr.pos_z[i] },
                 0.48,
                 0.9,
                 0.48,
                 rl.Color.init(20, 25, 30, 60),
-            );
-
-            // Citizen head (sphere)
-            rl.drawSphere(
-                .{ .x = c.position.x, .y = c.position.y + 1.05, .z = c.position.z },
-                0.24,
-                head_color,
             );
         }
 
         camera.end();
 
         // 3. 2D HUD & Interactive Management UI
-        drawHUD(warm_count, cold_count, camera);
+        drawHUD(warm_count, cold_count, current_cached_ui);
 
         // 4. Pause Menu Modal Overlay (if paused)
         if (is_paused) {
@@ -851,26 +1027,22 @@ pub fn main() !void {
 fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
     const vent_color = if (active) COLOR_GENERATOR_LIT else COLOR_GENERATOR_UNLIT;
 
-    // Selection & hover visual ground indicators
+    // Selection & hover visual ground indicators (Solids)
     if (selected) {
         rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 180, 50, 45));
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.15, 48, rl.Color.gold);
     } else if (hovered) {
         rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 35));
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.08, 48, rl.Color.init(180, 220, 255, 180));
     }
 
+    // --- Pass 1: Solid Geometries (Triangles Batch) ---
     // Base Tier 1: Wide base block
     rl.drawCube(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, COLOR_GENERATOR_BASE);
-    rl.drawCubeWires(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, rl.Color.init(20, 22, 26, 255));
 
     // Base Tier 2: Stepped platform
     rl.drawCube(.{ .x = 0, .y = 1.4, .z = 0 }, 5.8, 0.8, 5.8, rl.Color.init(50, 54, 62, 255));
-    rl.drawCubeWires(.{ .x = 0, .y = 1.4, .z = 0 }, 5.8, 0.8, 5.8, rl.Color.init(25, 28, 32, 255));
 
     // Furnace Core Block (Cubic furnace chamber)
     rl.drawCube(.{ .x = 0, .y = 3.4, .z = 0 }, 4.4, 3.2, 4.4, COLOR_GENERATOR_BASE);
-    rl.drawCubeWires(.{ .x = 0, .y = 3.4, .z = 0 }, 4.4, 3.2, 4.4, rl.Color.init(18, 20, 24, 255));
 
     // 4 Radiant Heat Vents (Glow orange when active)
     rl.drawCube(.{ .x = 0, .y = 3.4, .z = 2.22 }, 2.4, 1.6, 0.15, vent_color);
@@ -879,114 +1051,122 @@ fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
     rl.drawCube(.{ .x = -2.22, .y = 3.4, .z = 0 }, 0.15, 1.6, 2.4, vent_color);
 
     // Boiler Drum (Sphere atop furnace block)
-    rl.drawSphere(.{ .x = 0, .y = 5.8, .z = 0 }, 2.3, rl.Color.init(65, 70, 80, 255));
-    rl.drawSphereWires(.{ .x = 0, .y = 5.8, .z = 0 }, 2.32, 12, 12, rl.Color.init(28, 30, 36, 180));
+    rl.drawSphereEx(.{ .x = 0, .y = 5.8, .z = 0 }, 2.3, 8, 8, rl.Color.init(65, 70, 80, 255));
 
     // Chimney Stack (Cylinder)
     rl.drawCylinder(.{ .x = 0, .y = 7.0, .z = 0 }, 1.15, 1.35, 4.2, 16, rl.Color.init(42, 45, 52, 255));
-    rl.drawCylinderWires(.{ .x = 0, .y = 7.0, .z = 0 }, 1.15, 1.35, 4.2, 8, rl.Color.init(22, 24, 28, 255));
 
     // Chimney Rim / Brass Crown
     const crown_color = if (active) rl.Color.init(245, 165, 35, 255) else rl.Color.init(95, 100, 110, 255);
     rl.drawCylinder(.{ .x = 0, .y = 11.1, .z = 0 }, 1.38, 1.38, 0.35, 16, crown_color);
+
+    // --- Pass 2: Wire Outlines & Rings (Lines Batch) ---
+    if (selected) {
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.15, 48, rl.Color.gold);
+    } else if (hovered) {
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.08, 48, rl.Color.init(180, 220, 255, 180));
+    }
+
+    rl.drawCubeWires(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, rl.Color.init(20, 22, 26, 255));
+    rl.drawCubeWires(.{ .x = 0, .y = 1.4, .z = 0 }, 5.8, 0.8, 5.8, rl.Color.init(25, 28, 32, 255));
+    rl.drawCubeWires(.{ .x = 0, .y = 3.4, .z = 0 }, 4.4, 3.2, 4.4, rl.Color.init(18, 20, 24, 255));
+    rl.drawSphereWires(.{ .x = 0, .y = 5.8, .z = 0 }, 2.32, 8, 8, rl.Color.init(28, 30, 36, 180));
+    rl.drawCylinderWires(.{ .x = 0, .y = 7.0, .z = 0 }, 1.15, 1.35, 4.2, 8, rl.Color.init(22, 24, 28, 255));
 }
 
 fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
-    // 1. COAL PILE
+    // --- Pass 1: Solid Geometries (Triangles Batch) ---
+    // Selection & hover visual ground indicators
+    inline for (std.meta.tags(Resource)) |r| {
+        const pos = r.position();
+        if (selected == r) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+        } else if (hovered == r) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+        }
+    }
+
+    // 1. COAL PILE (Solids)
     {
         const pos = COAL_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, COLOR_COAL_PILE);
-        rl.drawCubeWires(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, rl.Color.init(10, 10, 14, 255));
-
         rl.drawCube(.{ .x = pos.x + 1.2, .y = 0.8, .z = pos.z + 0.9 }, 2.2, 1.6, 2.2, rl.Color.init(38, 38, 44, 255));
         rl.drawCube(.{ .x = pos.x - 1.1, .y = 0.7, .z = pos.z - 0.9 }, 2.0, 1.4, 2.0, rl.Color.init(44, 44, 52, 255));
         rl.drawCube(.{ .x = pos.x + 0.8, .y = 0.6, .z = pos.z - 1.1 }, 1.6, 1.2, 1.6, rl.Color.init(32, 32, 38, 255));
         rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.5, .z = pos.z + 1.2 }, 1.5, 1.0, 1.5, rl.Color.init(48, 48, 56, 255));
         rl.drawCube(.{ .x = pos.x + 0.1, .y = 2.4, .z = pos.z }, 1.4, 0.9, 1.4, rl.Color.init(22, 22, 26, 255));
-
-        if (selected == .coal) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
-        } else if (hovered == .coal) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
-        }
     }
 
-    // 2. WOOD PILE
+    // 2. WOOD PILE (Solids)
     {
         const pos = WOOD_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCubeWires(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-
         rl.drawCube(.{ .x = pos.x + 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCubeWires(.{ .x = pos.x + 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-
         rl.drawCube(.{ .x = pos.x - 0.6, .y = 1.3, .z = pos.z }, 1.0, 0.85, 4.4, rl.Color.init(162, 102, 58, 255));
         rl.drawCube(.{ .x = pos.x + 0.6, .y = 1.3, .z = pos.z }, 1.0, 0.85, 4.4, rl.Color.init(162, 102, 58, 255));
-
         rl.drawCube(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(178, 115, 68, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(90, 55, 25, 255));
-
-        if (selected == .wood) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
-        } else if (hovered == .wood) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
-        }
     }
 
-    // 3. STEEL PILE
+    // 3. STEEL PILE (Solids)
     {
         const pos = STEEL_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, COLOR_STEEL_PILE);
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
-
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z + 1.0 }, 4.8, 0.85, 1.2, COLOR_STEEL_PILE);
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z + 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
-
         rl.drawCube(.{ .x = pos.x - 1.3, .y = 1.25, .z = pos.z }, 1.2, 0.75, 4.0, rl.Color.init(168, 185, 205, 255));
         rl.drawCube(.{ .x = pos.x + 1.3, .y = 1.25, .z = pos.z }, 1.2, 0.75, 4.0, rl.Color.init(168, 185, 205, 255));
-
         rl.drawCube(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 3.2, 0.5, 2.6, rl.Color.init(190, 208, 226, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 3.2, 0.5, 2.6, rl.Color.init(100, 115, 130, 255));
-
         rl.drawCube(.{ .x = pos.x + 1.8, .y = 0.65, .z = pos.z + 1.9 }, 1.3, 1.3, 1.3, rl.Color.init(130, 145, 165, 255));
+    }
 
-        if (selected == .steel) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+    // 4. FOOD CACHE (Solids)
+    {
+        const pos = FOOD_PILE_POSITION;
+        rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, COLOR_FOOD_PILE);
+        rl.drawCube(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(180, 50, 40, 255));
+        rl.drawCylinder(.{ .x = pos.x + 1.2, .y = 0.0, .z = pos.z - 1.1 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
+        rl.drawCylinder(.{ .x = pos.x - 1.1, .y = 0.0, .z = pos.z + 1.2 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
+        rl.drawSphereEx(.{ .x = pos.x - 0.9, .y = 2.2, .z = pos.z - 0.7 }, 0.55, 6, 6, rl.Color.init(215, 185, 145, 255));
+    }
+
+    // --- Pass 2: Wire Outlines & Indicators (Lines Batch) ---
+    inline for (std.meta.tags(Resource)) |r| {
+        const pos = r.position();
+        if (selected == r) {
             rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
-        } else if (hovered == .steel) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+        } else if (hovered == r) {
             rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
         }
     }
 
-    // 4. FOOD CACHE
+    // Coal wires
+    {
+        const pos = COAL_PILE_POSITION;
+        rl.drawCubeWires(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, rl.Color.init(10, 10, 14, 255));
+    }
+
+    // Wood wires
+    {
+        const pos = WOOD_PILE_POSITION;
+        rl.drawCubeWires(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x + 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(90, 55, 25, 255));
+    }
+
+    // Steel wires
+    {
+        const pos = STEEL_PILE_POSITION;
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z + 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 3.2, 0.5, 2.6, rl.Color.init(100, 115, 130, 255));
+    }
+
+    // Food wires
     {
         const pos = FOOD_PILE_POSITION;
-        rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, COLOR_FOOD_PILE);
         rl.drawCubeWires(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, rl.Color.init(100, 25, 20, 255));
-
-        rl.drawCube(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(180, 50, 40, 255));
         rl.drawCubeWires(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(90, 20, 18, 255));
-
-        rl.drawCylinder(.{ .x = pos.x + 1.2, .y = 0.0, .z = pos.z - 1.1 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
-        rl.drawCylinder(.{ .x = pos.x - 1.1, .y = 0.0, .z = pos.z + 1.2 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
-
-        rl.drawSphere(.{ .x = pos.x - 0.9, .y = 2.2, .z = pos.z - 0.7 }, 0.55, rl.Color.init(215, 185, 145, 255));
-
-        if (selected == .food) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
-        } else if (hovered == .food) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
-        }
     }
 }
 
@@ -994,17 +1174,13 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
 // 2D HUD & UI
 // ============================================================================
 
-fn drawWorldLabels(camera: rl.Camera3D) void {
-    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
-    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
-
+fn drawWorldLabels(cached: CachedSceneUI) void {
     // 1. Heat Generator floating label
-    const gen_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
-    if (gen_screen.x > 30 and gen_screen.x < sw - 30 and gen_screen.y > 45 and gen_screen.y < sh - 35) {
+    if (cached.gen_label_on_screen) {
         const text = if (generator_active) "HEAT GENERATOR [ONLINE]" else "HEAT GENERATOR [OFFLINE]";
         const tw = rl.measureText(text, 11);
-        const bx = @as(i32, @intFromFloat(gen_screen.x)) - @divTrunc(tw, 2);
-        const by = @as(i32, @intFromFloat(gen_screen.y));
+        const bx = @as(i32, @intFromFloat(cached.gen_label_screen.x)) - @divTrunc(tw, 2);
+        const by = @as(i32, @intFromFloat(cached.gen_label_screen.y));
 
         const border_color = if (selected_generator)
             rl.Color.gold
@@ -1033,7 +1209,7 @@ fn drawWorldLabels(camera: rl.Camera3D) void {
 
     // 2. Resource Piles floating badges & On-Pile Worker Assignment Stations
     inline for (std.meta.tags(Resource)) |r| {
-        const ui = getPileUIBounds(r, camera);
+        const ui = cached.piles[@intFromEnum(r)];
         if (ui.is_on_screen) {
             const assigned = workers_assigned[@intFromEnum(r)];
             const is_selected = (selected_resource == r);
@@ -1197,14 +1373,14 @@ fn drawWorldLabels(camera: rl.Camera3D) void {
     }
 }
 
-fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
+fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
     // ------------------------------------------------------------------------
     // 3D FLOATING WORLD LABELS
     // ------------------------------------------------------------------------
-    drawWorldLabels(camera);
+    drawWorldLabels(cached);
 
     // ------------------------------------------------------------------------
     // TOP STATUS BAR (Stockpiles & Population Overview)
