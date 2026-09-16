@@ -35,20 +35,20 @@ pub var STEEL_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.25;
 pub var FOOD_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.35;
 
 // --- Resource Pile Positions (Generator is located at (0, 0, 0)) ---
-pub var COAL_PILE_POSITION: rl.Vector3 = .{ .x = -2.5, .y = 0.0, .z = -14.5 };
-pub var WOOD_PILE_POSITION: rl.Vector3 = .{ .x = 11.5, .y = 0.0, .z = -6.5 };
-pub var STEEL_PILE_POSITION: rl.Vector3 = .{ .x = -11.0, .y = 0.0, .z = 6.0 };
-pub var FOOD_PILE_POSITION: rl.Vector3 = .{ .x = 6.0, .y = 0.0, .z = 11.5 };
+pub var COAL_PILE_POSITION: rl.Vector3 = .{ .x = -2.0, .y = 0.0, .z = -14.0 };
+pub var WOOD_PILE_POSITION: rl.Vector3 = .{ .x = 12.0, .y = 0.0, .z = -6.0 };
+pub var STEEL_PILE_POSITION: rl.Vector3 = .{ .x = -12.0, .y = 0.0, .z = 6.0 };
+pub var FOOD_PILE_POSITION: rl.Vector3 = .{ .x = 6.0, .y = 0.0, .z = 12.0 };
 
 // --- Citizen Movement & Behavior Settings ---
 /// Walking speed of citizens in world units per second
 pub var CITIZEN_WALK_SPEED: f32 = 3.0;
 /// Inner radius boundary for idle citizens gathering around the generator
-pub var CITIZEN_IDLE_MIN_RADIUS: f32 = 2.8;
+pub var CITIZEN_IDLE_MIN_RADIUS: f32 = 4.4;
 /// Outer radius boundary for idle citizens gathering around the generator
-pub var CITIZEN_IDLE_MAX_RADIUS: f32 = 8.5;
+pub var CITIZEN_IDLE_MAX_RADIUS: f32 = 9.5;
 /// Wander radius around a resource pile for working citizens
-pub var CITIZEN_WORK_RADIUS: f32 = 3.6;
+pub var CITIZEN_WORK_RADIUS: f32 = 3.2;
 
 // --- Camera Navigation Settings ---
 pub var CAMERA_PAN_SPEED: f32 = 28.0;
@@ -70,13 +70,45 @@ pub var PILE_SCREEN_HIT_RADIUS_PX: f32 = 65.0;
 /// In-world vertical height offset where the floating badge/card is anchored above the pile
 pub var PILE_LABEL_HEIGHT_OFFSET: f32 = 3.8;
 
-// --- Grid & Building Settings ---
+// --- Grid & Structure Dimensions ---
 /// World units per grid cell square (2.0 world units per square)
 pub var GRID_CELL_SIZE: f32 = 2.0;
+
 /// Width in grid squares for a House (2 squares = 4.0 world units)
 pub var HOUSE_GRID_WIDTH: i32 = 2;
 /// Length in grid squares for a House (2 squares = 4.0 world units)
 pub var HOUSE_GRID_LENGTH: i32 = 2;
+
+/// Width in grid squares for the Heat Generator (4 squares = 8.0 world units)
+pub var GENERATOR_GRID_WIDTH: i32 = 4;
+/// Length in grid squares for the Heat Generator (4 squares = 8.0 world units)
+pub var GENERATOR_GRID_LENGTH: i32 = 4;
+/// Origin grid X coordinate for the Heat Generator (centered at world 0, 0)
+pub var GENERATOR_GRID_X: i32 = -2;
+/// Origin grid Z coordinate for the Heat Generator (centered at world 0, 0)
+pub var GENERATOR_GRID_Z: i32 = -2;
+
+/// Width in grid squares for all Resource Piles (2 squares = 4.0 world units)
+pub var PILE_GRID_WIDTH: i32 = 2;
+/// Length in grid squares for all Resource Piles (2 squares = 4.0 world units)
+pub var PILE_GRID_LENGTH: i32 = 2;
+
+/// Grid coordinates for Coal Pile (2x2 squares)
+pub var COAL_PILE_GRID_X: i32 = -2;
+pub var COAL_PILE_GRID_Z: i32 = -8;
+
+/// Grid coordinates for Wood Pile (2x2 squares)
+pub var WOOD_PILE_GRID_X: i32 = 5;
+pub var WOOD_PILE_GRID_Z: i32 = -4;
+
+/// Grid coordinates for Steel Pile (2x2 squares)
+pub var STEEL_PILE_GRID_X: i32 = -7;
+pub var STEEL_PILE_GRID_Z: i32 = 2;
+
+/// Grid coordinates for Food Pile (2x2 squares)
+pub var FOOD_PILE_GRID_X: i32 = 2;
+pub var FOOD_PILE_GRID_Z: i32 = 5;
+
 /// Wood cost required to construct one House
 pub var HOUSE_WOOD_COST: f32 = 20.0;
 /// Total citizens sheltered by a completed House
@@ -87,10 +119,6 @@ pub var HOUSE_BASE_BUILD_TIME: f32 = 20.0;
 pub var HOUSE_MAX_BUILDERS: i32 = 10;
 /// Clearance collision radius around a House in world units
 pub var HOUSE_COLLISION_RADIUS: f32 = 3.6;
-/// Clearance collision radius around the central Heat Generator
-pub var GENERATOR_COLLISION_RADIUS: f32 = 5.2;
-/// Clearance collision radius around resource piles
-pub var RESOURCE_PILE_COLLISION_RADIUS: f32 = 4.8;
 /// Maximum number of placed buildings in the settlement
 pub const MAX_BUILDINGS: usize = 128;
 
@@ -141,6 +169,34 @@ pub const Resource = enum(usize) {
             .steel => COLOR_STEEL_PILE,
             .food => COLOR_FOOD_PILE,
         };
+    }
+
+    pub fn gridX(self: Resource) i32 {
+        return switch (self) {
+            .coal => COAL_PILE_GRID_X,
+            .wood => WOOD_PILE_GRID_X,
+            .steel => STEEL_PILE_GRID_X,
+            .food => FOOD_PILE_GRID_X,
+        };
+    }
+
+    pub fn gridZ(self: Resource) i32 {
+        return switch (self) {
+            .coal => COAL_PILE_GRID_Z,
+            .wood => WOOD_PILE_GRID_Z,
+            .steel => STEEL_PILE_GRID_Z,
+            .food => FOOD_PILE_GRID_Z,
+        };
+    }
+
+    pub fn gridWidth(self: Resource) i32 {
+        _ = self;
+        return PILE_GRID_WIDTH;
+    }
+
+    pub fn gridLength(self: Resource) i32 {
+        _ = self;
+        return PILE_GRID_LENGTH;
     }
 
     pub fn position(self: Resource) rl.Vector3 {
@@ -660,25 +716,25 @@ fn distSqPointToBox2D(px: f32, pz: f32, min_x: f32, max_x: f32, min_z: f32, max_
 fn canPlaceBuildingAtGrid(gx: i32, gz: i32, btype: BuildingType) PlacementCheck {
     const gw = btype.gridWidth();
     const gl = btype.gridLength();
-    const s = GRID_CELL_SIZE;
 
-    const min_x = @as(f32, @floatFromInt(gx)) * s;
-    const max_x = @as(f32, @floatFromInt(gx + gw)) * s;
-    const min_z = @as(f32, @floatFromInt(gz)) * s;
-    const max_z = @as(f32, @floatFromInt(gz + gl)) * s;
-
-    // 1. Distance to Heat Generator at (0, 0, 0)
-    const gen_dist_sq = distSqPointToBox2D(0.0, 0.0, min_x, max_x, min_z, max_z);
-    if (gen_dist_sq < GENERATOR_COLLISION_RADIUS * GENERATOR_COLLISION_RADIUS) {
-        return .{ .valid = false, .reason = "Too close to Heat Generator" };
+    // 1. Grid overlap check with Heat Generator (4x4 squares: [GENERATOR_GRID_X, GENERATOR_GRID_X + GENERATOR_GRID_WIDTH))
+    const gen_overlap_x = (gx < GENERATOR_GRID_X + GENERATOR_GRID_WIDTH) and (gx + gw > GENERATOR_GRID_X);
+    const gen_overlap_z = (gz < GENERATOR_GRID_Z + GENERATOR_GRID_LENGTH) and (gz + gl > GENERATOR_GRID_Z);
+    if (gen_overlap_x and gen_overlap_z) {
+        return .{ .valid = false, .reason = "Overlaps Heat Generator" };
     }
 
-    // 2. Distance to Resource Piles
+    // 2. Grid overlap check with Resource Piles (2x2 squares each)
     inline for (std.meta.tags(Resource)) |r| {
-        const ppos = r.position();
-        const pile_dist_sq = distSqPointToBox2D(ppos.x, ppos.z, min_x, max_x, min_z, max_z);
-        if (pile_dist_sq < RESOURCE_PILE_COLLISION_RADIUS * RESOURCE_PILE_COLLISION_RADIUS) {
-            return .{ .valid = false, .reason = "Collides with resource pile" };
+        const rgx = r.gridX();
+        const rgz = r.gridZ();
+        const rgw = r.gridWidth();
+        const rgl = r.gridLength();
+
+        const pile_overlap_x = (gx < rgx + rgw) and (gx + gw > rgx);
+        const pile_overlap_z = (gz < rgz + rgl) and (gz + gl > rgz);
+        if (pile_overlap_x and pile_overlap_z) {
+            return .{ .valid = false, .reason = "Overlaps resource pile" };
         }
     }
 
@@ -892,16 +948,20 @@ fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, ui: PileUIBounds, r
         return true;
     }
 
-    // 2. Hovering near the 2D screen projection of the 3D pile model on the snow
-    const dist_to_base = rl.Vector2.distance(mouse_pos, ui.center_screen);
-    if (dist_to_base < PILE_SCREEN_HIT_RADIUS_PX) {
+    // 2. 3D Ray Collision with exact 2x2 grid bounding box
+    const pos = r.position();
+    const pile_box = rl.BoundingBox{
+        .min = .{ .x = pos.x - 2.0, .y = 0.0, .z = pos.z - 2.0 },
+        .max = .{ .x = pos.x + 2.0, .y = 3.2, .z = pos.z + 2.0 },
+    };
+    const hit = rl.getRayCollisionBox(ray, pile_box);
+    if (hit.hit) {
         return true;
     }
 
-    // 3. Hovering the 3D collision sphere in world space
-    const pos = r.position();
-    const hit = rl.getRayCollisionSphere(ray, .{ .x = pos.x, .y = 1.0, .z = pos.z }, 5.5);
-    if (hit.hit) {
+    // 3. Fallback: hovering near center screen projection
+    const dist_to_base = rl.Vector2.distance(mouse_pos, ui.center_screen);
+    if (dist_to_base < 35.0) {
         return true;
     }
 
@@ -909,22 +969,26 @@ fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, ui: PileUIBounds, r
 }
 
 fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, cached: CachedSceneUI, ray: rl.Ray) bool {
-    // 1. Hovering near the 2D screen projection of the Heat Generator base (height ~2.0)
-    if (cached.gen_base_on_screen) {
-        if (rl.Vector2.distance(mouse_pos, cached.gen_base_screen) < 70.0) {
-            return true;
-        }
-    }
-
-    // 2. Hovering the floating badge of the Heat Generator (height ~12.0)
-    if (rl.checkCollisionPointRec(mouse_pos, cached.gen_label_rect)) {
+    // 1. Hovering the floating badge of the Heat Generator (height ~12.0)
+    if (cached.gen_label_on_screen and rl.checkCollisionPointRec(mouse_pos, cached.gen_label_rect)) {
         return true;
     }
 
-    // 3. 3D Ray Collision with generous sphere
-    const gen_hit = rl.getRayCollisionSphere(ray, .{ .x = 0.0, .y = 4.0, .z = 0.0 }, 5.8);
+    // 2. 3D Ray Collision with exact 4x4 grid bounding box (8x8 world units)
+    const gen_box = rl.BoundingBox{
+        .min = .{ .x = -4.0, .y = 0.0, .z = -4.0 },
+        .max = .{ .x = 4.0, .y = 11.5, .z = 4.0 },
+    };
+    const gen_hit = rl.getRayCollisionBox(ray, gen_box);
     if (gen_hit.hit) {
         return true;
+    }
+
+    // 3. Fallback: hovering near center base projection
+    if (cached.gen_base_on_screen) {
+        if (rl.Vector2.distance(mouse_pos, cached.gen_base_screen) < 45.0) {
+            return true;
+        }
     }
 
     return false;
@@ -1444,14 +1508,14 @@ fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
 
     // Selection & hover visual ground indicators (Solids)
     if (selected) {
-        rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 180, 50, 45));
+        rl.drawCube(.{ .x = 0, .y = 0.03, .z = 0 }, 8.08, 0.05, 8.08, rl.Color.init(255, 180, 50, 45));
     } else if (hovered) {
-        rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 35));
+        rl.drawCube(.{ .x = 0, .y = 0.03, .z = 0 }, 8.08, 0.05, 8.08, rl.Color.init(180, 220, 255, 35));
     }
 
     // --- Pass 1: Solid Geometries (Triangles Batch) ---
-    // Base Tier 1: Wide base block
-    rl.drawCube(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, COLOR_GENERATOR_BASE);
+    // Base Tier 1: Wide base block (fits inside 4x4 grid footprint of 8.0 x 8.0)
+    rl.drawCube(.{ .x = 0, .y = 0.5, .z = 0 }, 7.8, 1.0, 7.8, COLOR_GENERATOR_BASE);
 
     // Base Tier 2: Stepped platform
     rl.drawCube(.{ .x = 0, .y = 1.4, .z = 0 }, 5.8, 0.8, 5.8, rl.Color.init(50, 54, 62, 255));
@@ -1477,12 +1541,12 @@ fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
 
     // --- Pass 2: Wire Outlines & Rings (Lines Batch) ---
     if (selected) {
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.15, 48, rl.Color.gold);
+        rl.drawCubeWires(.{ .x = 0, .y = 0.06, .z = 0 }, 8.08, 0.12, 8.08, rl.Color.gold);
     } else if (hovered) {
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.08, 48, rl.Color.init(180, 220, 255, 180));
+        rl.drawCubeWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.08, 0.08, 8.08, rl.Color.init(180, 220, 255, 180));
     }
 
-    rl.drawCubeWires(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, rl.Color.init(20, 22, 26, 255));
+    rl.drawCubeWires(.{ .x = 0, .y = 0.5, .z = 0 }, 7.8, 1.0, 7.8, rl.Color.init(20, 22, 26, 255));
     rl.drawCubeWires(.{ .x = 0, .y = 1.4, .z = 0 }, 5.8, 0.8, 5.8, rl.Color.init(25, 28, 32, 255));
     rl.drawCubeWires(.{ .x = 0, .y = 3.4, .z = 0 }, 4.4, 3.2, 4.4, rl.Color.init(18, 20, 24, 255));
     rl.drawSphereWires(.{ .x = 0, .y = 5.8, .z = 0 }, 2.32, 8, 8, rl.Color.init(28, 30, 36, 180));
@@ -1491,13 +1555,13 @@ fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
 
 fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     // --- Pass 1: Solid Geometries (Triangles Batch) ---
-    // Selection & hover visual ground indicators
+    // Selection & hover visual ground indicators (2x2 grid footprint = 4.0 x 4.0)
     inline for (std.meta.tags(Resource)) |r| {
         const pos = r.position();
         if (selected == r) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+            rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(255, 205, 50, 50));
         } else if (hovered == r) {
-            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+            rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(180, 220, 255, 40));
         }
     }
 
@@ -1505,42 +1569,42 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     {
         const pos = COAL_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, COLOR_COAL_PILE);
-        rl.drawCube(.{ .x = pos.x + 1.2, .y = 0.8, .z = pos.z + 0.9 }, 2.2, 1.6, 2.2, rl.Color.init(38, 38, 44, 255));
-        rl.drawCube(.{ .x = pos.x - 1.1, .y = 0.7, .z = pos.z - 0.9 }, 2.0, 1.4, 2.0, rl.Color.init(44, 44, 52, 255));
-        rl.drawCube(.{ .x = pos.x + 0.8, .y = 0.6, .z = pos.z - 1.1 }, 1.6, 1.2, 1.6, rl.Color.init(32, 32, 38, 255));
-        rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.5, .z = pos.z + 1.2 }, 1.5, 1.0, 1.5, rl.Color.init(48, 48, 56, 255));
+        rl.drawCube(.{ .x = pos.x + 1.1, .y = 0.8, .z = pos.z + 0.8 }, 1.9, 1.6, 1.9, rl.Color.init(38, 38, 44, 255));
+        rl.drawCube(.{ .x = pos.x - 1.0, .y = 0.7, .z = pos.z - 0.8 }, 1.8, 1.4, 1.8, rl.Color.init(44, 44, 52, 255));
+        rl.drawCube(.{ .x = pos.x + 0.8, .y = 0.6, .z = pos.z - 1.0 }, 1.5, 1.2, 1.5, rl.Color.init(32, 32, 38, 255));
+        rl.drawCube(.{ .x = pos.x - 0.8, .y = 0.5, .z = pos.z + 1.0 }, 1.4, 1.0, 1.4, rl.Color.init(48, 48, 56, 255));
         rl.drawCube(.{ .x = pos.x + 0.1, .y = 2.4, .z = pos.z }, 1.4, 0.9, 1.4, rl.Color.init(22, 22, 26, 255));
     }
 
-    // 2. WOOD PILE (Solids)
+    // 2. WOOD PILE (Solids - fits inside 2x2 grid footprint)
     {
         const pos = WOOD_PILE_POSITION;
-        rl.drawCube(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCube(.{ .x = pos.x + 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
-        rl.drawCube(.{ .x = pos.x - 0.6, .y = 1.3, .z = pos.z }, 1.0, 0.85, 4.4, rl.Color.init(162, 102, 58, 255));
-        rl.drawCube(.{ .x = pos.x + 0.6, .y = 1.3, .z = pos.z }, 1.0, 0.85, 4.4, rl.Color.init(162, 102, 58, 255));
-        rl.drawCube(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(178, 115, 68, 255));
+        rl.drawCube(.{ .x = pos.x - 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, COLOR_WOOD_PILE);
+        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, COLOR_WOOD_PILE);
+        rl.drawCube(.{ .x = pos.x + 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, COLOR_WOOD_PILE);
+        rl.drawCube(.{ .x = pos.x - 0.55, .y = 1.3, .z = pos.z }, 0.9, 0.85, 3.6, rl.Color.init(162, 102, 58, 255));
+        rl.drawCube(.{ .x = pos.x + 0.55, .y = 1.3, .z = pos.z }, 0.9, 0.85, 3.6, rl.Color.init(162, 102, 58, 255));
+        rl.drawCube(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 0.9, 0.8, 3.4, rl.Color.init(178, 115, 68, 255));
     }
 
-    // 3. STEEL PILE (Solids)
+    // 3. STEEL PILE (Solids - fits inside 2x2 grid footprint)
     {
         const pos = STEEL_PILE_POSITION;
-        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, COLOR_STEEL_PILE);
-        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z + 1.0 }, 4.8, 0.85, 1.2, COLOR_STEEL_PILE);
-        rl.drawCube(.{ .x = pos.x - 1.3, .y = 1.25, .z = pos.z }, 1.2, 0.75, 4.0, rl.Color.init(168, 185, 205, 255));
-        rl.drawCube(.{ .x = pos.x + 1.3, .y = 1.25, .z = pos.z }, 1.2, 0.75, 4.0, rl.Color.init(168, 185, 205, 255));
-        rl.drawCube(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 3.2, 0.5, 2.6, rl.Color.init(190, 208, 226, 255));
-        rl.drawCube(.{ .x = pos.x + 1.8, .y = 0.65, .z = pos.z + 1.9 }, 1.3, 1.3, 1.3, rl.Color.init(130, 145, 165, 255));
+        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z - 0.9 }, 3.8, 0.85, 1.1, COLOR_STEEL_PILE);
+        rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z + 0.9 }, 3.8, 0.85, 1.1, COLOR_STEEL_PILE);
+        rl.drawCube(.{ .x = pos.x - 1.1, .y = 1.25, .z = pos.z }, 1.1, 0.75, 3.4, rl.Color.init(168, 185, 205, 255));
+        rl.drawCube(.{ .x = pos.x + 1.1, .y = 1.25, .z = pos.z }, 1.1, 0.75, 3.4, rl.Color.init(168, 185, 205, 255));
+        rl.drawCube(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 2.8, 0.5, 2.4, rl.Color.init(190, 208, 226, 255));
+        rl.drawCube(.{ .x = pos.x + 1.2, .y = 0.65, .z = pos.z + 1.2 }, 1.1, 1.1, 1.1, rl.Color.init(130, 145, 165, 255));
     }
 
-    // 4. FOOD CACHE (Solids)
+    // 4. FOOD CACHE (Solids - fits inside 2x2 grid footprint)
     {
         const pos = FOOD_PILE_POSITION;
-        rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, COLOR_FOOD_PILE);
-        rl.drawCube(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(180, 50, 40, 255));
-        rl.drawCylinder(.{ .x = pos.x + 1.2, .y = 0.0, .z = pos.z - 1.1 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
-        rl.drawCylinder(.{ .x = pos.x - 1.1, .y = 0.0, .z = pos.z + 1.2 }, 0.65, 0.65, 1.6, 12, rl.Color.init(115, 82, 58, 255));
+        rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.8, 1.9, 1.8, COLOR_FOOD_PILE);
+        rl.drawCube(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.6, 1.7, 1.6, rl.Color.init(180, 50, 40, 255));
+        rl.drawCylinder(.{ .x = pos.x + 1.1, .y = 0.0, .z = pos.z - 1.0 }, 0.6, 0.6, 1.6, 12, rl.Color.init(115, 82, 58, 255));
+        rl.drawCylinder(.{ .x = pos.x - 1.0, .y = 0.0, .z = pos.z + 1.1 }, 0.6, 0.6, 1.6, 12, rl.Color.init(115, 82, 58, 255));
         rl.drawSphereEx(.{ .x = pos.x - 0.9, .y = 2.2, .z = pos.z - 0.7 }, 0.55, 6, 6, rl.Color.init(215, 185, 145, 255));
     }
 
@@ -1548,9 +1612,9 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     inline for (std.meta.tags(Resource)) |r| {
         const pos = r.position();
         if (selected == r) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+            rl.drawCubeWires(.{ .x = pos.x, .y = 0.06, .z = pos.z }, 4.08, 0.12, 4.08, rl.Color.gold);
         } else if (hovered == r) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
+            rl.drawCubeWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.08, 0.08, 4.08, rl.Color.init(200, 220, 255, 180));
         }
     }
 
@@ -1563,18 +1627,18 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     // Wood wires
     {
         const pos = WOOD_PILE_POSITION;
-        rl.drawCubeWires(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-        rl.drawCubeWires(.{ .x = pos.x + 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(90, 55, 25, 255));
+        rl.drawCubeWires(.{ .x = pos.x - 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x + 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, rl.Color.init(80, 45, 20, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 0.9, 0.8, 3.4, rl.Color.init(90, 55, 25, 255));
     }
 
     // Steel wires
     {
         const pos = STEEL_PILE_POSITION;
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z + 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
-        rl.drawCubeWires(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 3.2, 0.5, 2.6, rl.Color.init(100, 115, 130, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 0.9 }, 3.8, 0.85, 1.1, rl.Color.init(80, 95, 110, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z + 0.9 }, 3.8, 0.85, 1.1, rl.Color.init(80, 95, 110, 255));
+        rl.drawCubeWires(.{ .x = pos.x, .y = 1.85, .z = pos.z }, 2.8, 0.5, 2.4, rl.Color.init(100, 115, 130, 255));
     }
 
     // Food wires
@@ -1850,7 +1914,7 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
                     }
 
                     // Subtitle
-                    rl.drawText("Infinite Gathering Point", @intFromFloat(cr.x + 12), @intFromFloat(cr.y + 29), 10, rl.Color.init(140, 175, 210, 255));
+                    rl.drawText("Resource Stockpile | 2x2 Grid", @intFromFloat(cr.x + 12), @intFromFloat(cr.y + 29), 10, rl.Color.init(140, 175, 210, 255));
 
                     // Divider line 1
                     rl.drawLine(
@@ -2455,7 +2519,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
             }
         }
 
-        rl.drawText("Central Thermal Facility", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
+        rl.drawText("Central Thermal Facility | 4x4 Grid", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
         if (generator_active) {
             rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, COLOR_GENERATOR_LIT);
