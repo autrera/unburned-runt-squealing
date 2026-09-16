@@ -70,7 +70,13 @@ pub var PILE_SCREEN_HIT_RADIUS_PX: f32 = 65.0;
 /// In-world vertical height offset where the floating badge/card is anchored above the pile
 pub var PILE_LABEL_HEIGHT_OFFSET: f32 = 3.8;
 
-// --- Building & Construction Settings ---
+// --- Grid & Building Settings ---
+/// World units per grid cell square (2.0 world units per square)
+pub var GRID_CELL_SIZE: f32 = 2.0;
+/// Width in grid squares for a House (2 squares = 4.0 world units)
+pub var HOUSE_GRID_WIDTH: i32 = 2;
+/// Length in grid squares for a House (2 squares = 4.0 world units)
+pub var HOUSE_GRID_LENGTH: i32 = 2;
 /// Wood cost required to construct one House
 pub var HOUSE_WOOD_COST: f32 = 20.0;
 /// Total citizens sheltered by a completed House
@@ -216,6 +222,18 @@ pub const BuildingType = enum(usize) {
         };
     }
 
+    pub fn gridWidth(self: BuildingType) i32 {
+        return switch (self) {
+            .house => HOUSE_GRID_WIDTH,
+        };
+    }
+
+    pub fn gridLength(self: BuildingType) i32 {
+        return switch (self) {
+            .house => HOUSE_GRID_LENGTH,
+        };
+    }
+
     pub fn collisionRadius(self: BuildingType) f32 {
         return switch (self) {
             .house => HOUSE_COLLISION_RADIUS,
@@ -231,11 +249,18 @@ pub const BuildingState = enum {
 pub const Building = struct {
     id: usize,
     btype: BuildingType,
+    grid_x: i32,
+    grid_z: i32,
     pos: rl.Vector3,
     state: BuildingState,
     progress: f32, // 0.0 to 1.0
     active_builders: i32,
     is_warm: bool,
+};
+
+pub const GridCoord = struct {
+    gx: i32,
+    gz: i32,
 };
 
 pub const BuildTab = enum {
@@ -608,39 +633,72 @@ fn getMouseGroundIntersection(ray: rl.Ray) ?rl.Vector3 {
     };
 }
 
-fn canPlaceBuildingAt(pos: rl.Vector3, btype: BuildingType) PlacementCheck {
-    const col_radius = btype.collisionRadius();
+pub fn worldToGrid(hx: f32, hz: f32, gw: i32, gl: i32) GridCoord {
+    const s = GRID_CELL_SIZE;
+    const half_w = @as(f32, @floatFromInt(gw)) * 0.5;
+    const half_l = @as(f32, @floatFromInt(gl)) * 0.5;
+    const gx = @as(i32, @intFromFloat(@round((hx / s) - half_w)));
+    const gz = @as(i32, @intFromFloat(@round((hz / s) - half_l)));
+    return .{ .gx = gx, .gz = gz };
+}
+
+pub fn gridToWorldCenter(gx: i32, gz: i32, gw: i32, gl: i32) rl.Vector3 {
+    const s = GRID_CELL_SIZE;
+    const cx = (@as(f32, @floatFromInt(gx)) + @as(f32, @floatFromInt(gw)) * 0.5) * s;
+    const cz = (@as(f32, @floatFromInt(gz)) + @as(f32, @floatFromInt(gl)) * 0.5) * s;
+    return .{ .x = cx, .y = 0.0, .z = cz };
+}
+
+fn distSqPointToBox2D(px: f32, pz: f32, min_x: f32, max_x: f32, min_z: f32, max_z: f32) f32 {
+    const closest_x = std.math.clamp(px, min_x, max_x);
+    const closest_z = std.math.clamp(pz, min_z, max_z);
+    const dx = px - closest_x;
+    const dz = pz - closest_z;
+    return dx * dx + dz * dz;
+}
+
+fn canPlaceBuildingAtGrid(gx: i32, gz: i32, btype: BuildingType) PlacementCheck {
+    const gw = btype.gridWidth();
+    const gl = btype.gridLength();
+    const s = GRID_CELL_SIZE;
+
+    const min_x = @as(f32, @floatFromInt(gx)) * s;
+    const max_x = @as(f32, @floatFromInt(gx + gw)) * s;
+    const min_z = @as(f32, @floatFromInt(gz)) * s;
+    const max_z = @as(f32, @floatFromInt(gz + gl)) * s;
 
     // 1. Distance to Heat Generator at (0, 0, 0)
-    const dist_gen_sq = pos.x * pos.x + pos.z * pos.z;
-    const min_gen_dist = GENERATOR_COLLISION_RADIUS + col_radius;
-    if (dist_gen_sq < min_gen_dist * min_gen_dist) {
+    const gen_dist_sq = distSqPointToBox2D(0.0, 0.0, min_x, max_x, min_z, max_z);
+    if (gen_dist_sq < GENERATOR_COLLISION_RADIUS * GENERATOR_COLLISION_RADIUS) {
         return .{ .valid = false, .reason = "Too close to Heat Generator" };
     }
 
     // 2. Distance to Resource Piles
     inline for (std.meta.tags(Resource)) |r| {
         const ppos = r.position();
-        const dx = pos.x - ppos.x;
-        const dz = pos.z - ppos.z;
-        const min_pile_dist = RESOURCE_PILE_COLLISION_RADIUS + col_radius;
-        if (dx * dx + dz * dz < min_pile_dist * min_pile_dist) {
+        const pile_dist_sq = distSqPointToBox2D(ppos.x, ppos.z, min_x, max_x, min_z, max_z);
+        if (pile_dist_sq < RESOURCE_PILE_COLLISION_RADIUS * RESOURCE_PILE_COLLISION_RADIUS) {
             return .{ .valid = false, .reason = "Collides with resource pile" };
         }
     }
 
-    // 3. Distance to existing buildings
+    // 3. Grid overlap check with existing buildings (exact integer interval overlap)
     for (buildings[0..buildings_count]) |b| {
-        const dx = pos.x - b.pos.x;
-        const dz = pos.z - b.pos.z;
-        const min_b_dist = b.btype.collisionRadius() + col_radius;
-        if (dx * dx + dz * dz < min_b_dist * min_b_dist) {
-            return .{ .valid = false, .reason = "Collides with existing building" };
+        const bgw = b.btype.gridWidth();
+        const bgl = b.btype.gridLength();
+
+        const overlap_x = (gx < b.grid_x + bgw) and (gx + gw > b.grid_x);
+        const overlap_z = (gz < b.grid_z + bgl) and (gz + gl > b.grid_z);
+
+        if (overlap_x and overlap_z) {
+            return .{ .valid = false, .reason = "Grid squares occupied" };
         }
     }
 
-    // 4. City boundary check (e.g. radius <= 85.0)
-    if (dist_gen_sq > 85.0 * 85.0) {
+    // 4. City boundary check
+    const center_pos = gridToWorldCenter(gx, gz, gw, gl);
+    const dist_center_sq = center_pos.x * center_pos.x + center_pos.z * center_pos.z;
+    if (dist_center_sq > 85.0 * 85.0) {
         return .{ .valid = false, .reason = "Beyond city boundary" };
     }
 
@@ -932,6 +990,8 @@ pub fn main() !void {
         // GAMEPLAY INPUT & SIMULATION (Only when NOT paused)
         // --------------------------------------------------------------------
         var ground_hit: ?rl.Vector3 = null;
+        var snapped_grid: ?GridCoord = null;
+        var placement_pos: ?rl.Vector3 = null;
         var placement_check = PlacementCheck{ .valid = false, .reason = "" };
         const mouse_pos = rl.getMousePosition();
 
@@ -1071,9 +1131,21 @@ pub fn main() !void {
             const ray = rl.getScreenToWorldRay(mouse_pos, camera);
             ground_hit = getMouseGroundIntersection(ray);
             if (placing_building) |btype| {
-                if (ground_hit) |pos| {
-                    placement_check = canPlaceBuildingAt(pos, btype);
+                if (ground_hit) |hit| {
+                    const gw = btype.gridWidth();
+                    const gl = btype.gridLength();
+                    const snapped = worldToGrid(hit.x, hit.z, gw, gl);
+                    snapped_grid = snapped;
+                    placement_pos = gridToWorldCenter(snapped.gx, snapped.gz, gw, gl);
+                    placement_check = canPlaceBuildingAtGrid(snapped.gx, snapped.gz, btype);
+                } else {
+                    snapped_grid = null;
+                    placement_pos = null;
+                    placement_check = .{ .valid = false, .reason = "Cursor off map" };
                 }
+            } else {
+                snapped_grid = null;
+                placement_pos = null;
             }
 
             // Detect hover over resource piles, Heat Generator & buildings
@@ -1091,7 +1163,13 @@ pub fn main() !void {
                     hovered_generator = true;
                 }
                 for (buildings[0..buildings_count]) |b| {
-                    const hit = rl.getRayCollisionSphere(ray, .{ .x = b.pos.x, .y = 1.5, .z = b.pos.z }, b.btype.collisionRadius());
+                    const gw_f = @as(f32, @floatFromInt(b.btype.gridWidth())) * GRID_CELL_SIZE;
+                    const gl_f = @as(f32, @floatFromInt(b.btype.gridLength())) * GRID_CELL_SIZE;
+                    const box = rl.BoundingBox{
+                        .min = .{ .x = b.pos.x - gw_f * 0.5, .y = 0.0, .z = b.pos.z - gl_f * 0.5 },
+                        .max = .{ .x = b.pos.x + gw_f * 0.5, .y = 3.6, .z = b.pos.z + gl_f * 0.5 },
+                    };
+                    const hit = rl.getRayCollisionBox(ray, box);
                     if (hit.hit) {
                         hovered_building = b.id;
                     }
@@ -1111,14 +1189,17 @@ pub fn main() !void {
             if (rl.isMouseButtonPressed(.left)) {
                 if (placing_building) |btype| {
                     if (!in_top_bar and !in_bottom_bar) {
-                        if (ground_hit) |pos| {
+                        if (snapped_grid) |snapped| {
                             if (placement_check.valid) {
                                 stockpiles[@intFromEnum(Resource.wood)] -= btype.woodCost();
                                 if (buildings_count < MAX_BUILDINGS) {
+                                    const center_pos = gridToWorldCenter(snapped.gx, snapped.gz, btype.gridWidth(), btype.gridLength());
                                     buildings[buildings_count] = .{
                                         .id = buildings_count,
                                         .btype = btype,
-                                        .pos = pos,
+                                        .grid_x = snapped.gx,
+                                        .grid_z = snapped.gz,
+                                        .pos = center_pos,
                                         .state = .constructing,
                                         .progress = 0.0,
                                         .active_builders = 0,
@@ -1290,7 +1371,7 @@ pub fn main() !void {
         drawResourcePiles(selected_resource, hovered_resource);
 
         // Buildings solids & Placement Ghost solid
-        drawBuildingsSolids(ground_hit, placing_building, placement_check.valid);
+        drawBuildingsSolids(placement_pos, placing_building, placement_check.valid, snapped_grid);
 
         // Citizen bodies (RL_TRIANGLES)
         for (0..citizen_mgr.count) |i| {
@@ -1329,7 +1410,7 @@ pub fn main() !void {
         }
 
         // Buildings wires & Placement Ghost wires
-        drawBuildingsWires(selected_building, hovered_building, ground_hit, placing_building, placement_check.valid);
+        drawBuildingsWires(selected_building, hovered_building, placement_pos, placing_building, placement_check.valid, snapped_grid);
 
         // Citizen wireframe accents
         for (0..citizen_mgr.count) |i| {
@@ -1504,80 +1585,145 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 }
 
-fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool) void {
+fn drawBlueprintGrid(gx: i32, gz: i32, gw: i32, gl: i32) void {
+    const s = GRID_CELL_SIZE;
+    const margin: i32 = 8;
+    const min_gx = gx - margin;
+    const max_gx = gx + gw + margin;
+    const min_gz = gz - margin;
+    const max_gz = gz + gl + margin;
+
+    const min_x = @as(f32, @floatFromInt(min_gx)) * s;
+    const max_x = @as(f32, @floatFromInt(max_gx)) * s;
+    const min_z = @as(f32, @floatFromInt(min_gz)) * s;
+    const max_z = @as(f32, @floatFromInt(max_gz)) * s;
+
+    const grid_color = rl.Color.init(125, 155, 185, 75);
+
+    var ix = min_gx;
+    while (ix <= max_gx) : (ix += 1) {
+        const x = @as(f32, @floatFromInt(ix)) * s;
+        rl.drawLine3D(.{ .x = x, .y = 0.02, .z = min_z }, .{ .x = x, .y = 0.02, .z = max_z }, grid_color);
+    }
+
+    var iz = min_gz;
+    while (iz <= max_gz) : (iz += 1) {
+        const z = @as(f32, @floatFromInt(iz)) * s;
+        rl.drawLine3D(.{ .x = min_x, .y = 0.02, .z = z }, .{ .x = max_x, .y = 0.02, .z = z }, grid_color);
+    }
+}
+
+fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool, snapped_grid: ?GridCoord) void {
     for (buildings[0..buildings_count]) |b| {
         if (b.state == .constructing) {
-            // Foundation slab
-            rl.drawCube(.{ .x = b.pos.x, .y = 0.2, .z = b.pos.z }, 4.2, 0.4, 4.2, COLOR_SCAFFOLDING);
+            // Foundation slab (3.92 x 0.36 x 3.92)
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.92, 0.36, 3.92, COLOR_SCAFFOLDING);
 
             // 4 corner timber scaffolding posts (height rises with progress)
             const post_h = @max(0.6, 3.2 * b.progress);
-            rl.drawCube(.{ .x = b.pos.x - 1.8, .y = post_h / 2.0, .z = b.pos.z - 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
-            rl.drawCube(.{ .x = b.pos.x + 1.8, .y = post_h / 2.0, .z = b.pos.z - 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
-            rl.drawCube(.{ .x = b.pos.x - 1.8, .y = post_h / 2.0, .z = b.pos.z + 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
-            rl.drawCube(.{ .x = b.pos.x + 1.8, .y = post_h / 2.0, .z = b.pos.z + 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x - 1.65, .y = post_h / 2.0, .z = b.pos.z - 1.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x + 1.65, .y = post_h / 2.0, .z = b.pos.z - 1.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x - 1.65, .y = post_h / 2.0, .z = b.pos.z + 1.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x + 1.65, .y = post_h / 2.0, .z = b.pos.z + 1.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
 
             // Partial walls rising with progress
             const wall_h = 2.2 * b.progress;
             if (wall_h > 0.15) {
-                rl.drawCube(.{ .x = b.pos.x, .y = 0.4 + wall_h / 2.0, .z = b.pos.z }, 3.6, wall_h, 3.6, COLOR_HOUSE_WALLS);
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.36 + wall_h / 2.0, .z = b.pos.z }, 3.5, wall_h, 3.5, COLOR_HOUSE_WALLS);
             }
         } else {
             // Completed House
-            // Base foundation
-            rl.drawCube(.{ .x = b.pos.x, .y = 0.2, .z = b.pos.z }, 4.2, 0.4, 4.2, rl.Color.init(55, 42, 32, 255));
-            // Main timber walls
-            rl.drawCube(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.8, 2.2, 3.8, COLOR_HOUSE_WALLS);
-            // Peaked slate roof
-            rl.drawCube(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 4.2, 0.75, 4.2, COLOR_HOUSE_ROOF);
-            rl.drawCube(.{ .x = b.pos.x, .y = 3.35, .z = b.pos.z }, 4.3, 0.35, 1.8, rl.Color.init(45, 52, 60, 255));
+            // Base foundation (3.92 x 0.36 x 3.92)
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.92, 0.36, 3.92, rl.Color.init(55, 42, 32, 255));
+            // Main timber walls (3.6 x 2.2 x 3.6)
+            rl.drawCube(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, COLOR_HOUSE_WALLS);
+            // Peaked slate roof (3.92 x 0.75 x 3.92)
+            rl.drawCube(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, COLOR_HOUSE_ROOF);
+            rl.drawCube(.{ .x = b.pos.x, .y = 3.32, .z = b.pos.z }, 3.96, 0.32, 1.8, rl.Color.init(45, 52, 60, 255));
             // Chimney
-            rl.drawCube(.{ .x = b.pos.x + 1.2, .y = 3.2, .z = b.pos.z + 1.1 }, 0.7, 1.6, 0.7, COLOR_HOUSE_CHIMNEY);
+            rl.drawCube(.{ .x = b.pos.x + 1.15, .y = 3.2, .z = b.pos.z + 1.05 }, 0.65, 1.6, 0.65, COLOR_HOUSE_CHIMNEY);
             // Front door
-            rl.drawCube(.{ .x = b.pos.x, .y = 0.8, .z = b.pos.z + 1.95 }, 1.0, 1.3, 0.15, rl.Color.init(42, 30, 22, 255));
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.8, .z = b.pos.z + 1.82 }, 0.9, 1.25, 0.12, rl.Color.init(42, 30, 22, 255));
             // Windows
             const win_color = if (b.is_warm) rl.Color.init(255, 210, 85, 255) else rl.Color.init(130, 175, 220, 255);
-            rl.drawCube(.{ .x = b.pos.x - 1.95, .y = 1.5, .z = b.pos.z }, 0.15, 0.8, 0.8, win_color);
-            rl.drawCube(.{ .x = b.pos.x + 1.95, .y = 1.5, .z = b.pos.z }, 0.15, 0.8, 0.8, win_color);
+            rl.drawCube(.{ .x = b.pos.x - 1.82, .y = 1.5, .z = b.pos.z }, 0.12, 0.8, 0.8, win_color);
+            rl.drawCube(.{ .x = b.pos.x + 1.82, .y = 1.5, .z = b.pos.z }, 0.12, 0.8, 0.8, win_color);
         }
     }
 
     // Ghost preview (solids)
-    if (placing != null) {
-        if (cand_pos) |pos| {
-            const col = if (can_place) COLOR_GHOST_VALID else COLOR_GHOST_INVALID;
-            rl.drawCylinder(.{ .x = pos.x, .y = 0.04, .z = pos.z }, HOUSE_COLLISION_RADIUS, HOUSE_COLLISION_RADIUS, 0.06, 32, col);
-            rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.8, 2.2, 3.8, col);
-            rl.drawCube(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 4.2, 0.75, 4.2, col);
-            rl.drawCube(.{ .x = pos.x + 1.2, .y = 3.2, .z = pos.z + 1.1 }, 0.7, 1.6, 0.7, col);
+    if (placing) |btype| {
+        if (snapped_grid) |snapped| {
+            const s = GRID_CELL_SIZE;
+            const gw = btype.gridWidth();
+            const gl = btype.gridLength();
+            const cell_col = if (can_place) rl.Color.init(50, 205, 110, 110) else rl.Color.init(230, 50, 50, 110);
+
+            var ix: i32 = 0;
+            while (ix < gw) : (ix += 1) {
+                var iz: i32 = 0;
+                while (iz < gl) : (iz += 1) {
+                    const cell_x = (@as(f32, @floatFromInt(snapped.gx + ix)) + 0.5) * s;
+                    const cell_z = (@as(f32, @floatFromInt(snapped.gz + iz)) + 0.5) * s;
+                    rl.drawCube(.{ .x = cell_x, .y = 0.025, .z = cell_z }, s - 0.08, 0.03, s - 0.08, cell_col);
+                }
+            }
+
+            if (cand_pos) |pos| {
+                const col = if (can_place) COLOR_GHOST_VALID else COLOR_GHOST_INVALID;
+                rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, col);
+                rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, col);
+                rl.drawCube(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 3.92, 0.75, 3.92, col);
+                rl.drawCube(.{ .x = pos.x + 1.15, .y = 3.2, .z = pos.z + 1.05 }, 0.65, 1.6, 0.65, col);
+            }
         }
     }
 }
 
-fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool) void {
+fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool, snapped_grid: ?GridCoord) void {
     for (buildings[0..buildings_count]) |b| {
         if (b.state == .constructing) {
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 4.2, 3.2, 4.2, COLOR_SCAFFOLDING);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 3.92, 3.2, 3.92, COLOR_SCAFFOLDING);
         } else {
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.8, 2.2, 3.8, rl.Color.init(35, 25, 20, 255));
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 4.2, 0.75, 4.2, rl.Color.init(30, 36, 42, 255));
-            rl.drawCubeWires(.{ .x = b.pos.x + 1.2, .y = 3.2, .z = b.pos.z + 1.1 }, 0.7, 1.6, 0.7, rl.Color.init(25, 20, 18, 255));
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, rl.Color.init(35, 25, 20, 255));
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, rl.Color.init(30, 36, 42, 255));
+            rl.drawCubeWires(.{ .x = b.pos.x + 1.15, .y = 3.2, .z = b.pos.z + 1.05 }, 0.65, 1.6, 0.65, rl.Color.init(25, 20, 18, 255));
         }
 
         if (selected == b.id) {
-            rl.drawCylinderWires(.{ .x = b.pos.x, .y = 0.08, .z = b.pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 4.04, 3.3, 4.04, rl.Color.gold);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.05, .z = b.pos.z }, 4.1, 0.1, 4.1, rl.Color.gold);
         } else if (hovered == b.id) {
-            rl.drawCylinderWires(.{ .x = b.pos.x, .y = 0.06, .z = b.pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(180, 220, 255, 180));
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 4.04, 3.3, 4.04, rl.Color.init(180, 220, 255, 180));
         }
     }
 
     // Ghost preview (wires)
-    if (placing != null) {
-        if (cand_pos) |pos| {
-            const wire_col = if (can_place) rl.Color.init(90, 255, 150, 255) else rl.Color.init(255, 80, 80, 255);
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.08, .z = pos.z }, HOUSE_COLLISION_RADIUS, HOUSE_COLLISION_RADIUS, 0.12, 32, wire_col);
-            rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.8, 2.2, 3.8, wire_col);
-            rl.drawCubeWires(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 4.2, 0.75, 4.2, wire_col);
+    if (placing) |btype| {
+        if (snapped_grid) |snapped| {
+            const s = GRID_CELL_SIZE;
+            const gw = btype.gridWidth();
+            const gl = btype.gridLength();
+
+            drawBlueprintGrid(snapped.gx, snapped.gz, gw, gl);
+
+            const wire_col = if (can_place) rl.Color.init(80, 255, 140, 220) else rl.Color.init(255, 75, 75, 220);
+
+            var ix: i32 = 0;
+            while (ix < gw) : (ix += 1) {
+                var iz: i32 = 0;
+                while (iz < gl) : (iz += 1) {
+                    const cell_x = (@as(f32, @floatFromInt(snapped.gx + ix)) + 0.5) * s;
+                    const cell_z = (@as(f32, @floatFromInt(snapped.gz + iz)) + 0.5) * s;
+                    rl.drawCubeWires(.{ .x = cell_x, .y = 0.035, .z = cell_z }, s - 0.06, 0.04, s - 0.06, wire_col);
+                }
+            }
+
+            if (cand_pos) |pos| {
+                rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, wire_col);
+                rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, wire_col);
+                rl.drawCubeWires(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 3.92, 0.75, 3.92, wire_col);
+            }
         }
     }
 }
@@ -1897,8 +2043,8 @@ fn drawBuildingDialog(sw_f: f32) void {
                 }
             }
 
-            // Subtitle
-            rl.drawText("Residential Shelter", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
+            // Subtitle & Grid coordinates
+            rl.drawText(fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z }), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
             // Status
             if (b.state == .completed) {
@@ -2039,9 +2185,9 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
         const cost_text = fmt("Cost: {d} Wood", .{@as(i32, @intFromFloat(HOUSE_WOOD_COST))});
         rl.drawText(cost_text, @intFromFloat(card_x + 56), @intFromFloat(card_y + 36), 11, if (can_afford) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
 
-        // Capacity & Builder Specs
-        rl.drawText("Capacity: 10 People", @intFromFloat(card_x + 50), @intFromFloat(card_y + 57), 11, rl.Color.init(180, 195, 215, 255));
-        rl.drawText("Builders: Up to 10 (20s)", @intFromFloat(card_x + 50), @intFromFloat(card_y + 72), 11, rl.Color.init(140, 160, 185, 255));
+        // Footprint, Capacity & Builder Specs
+        rl.drawText("Footprint: 2x2 Grid Squares", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(245, 205, 70, 255));
+        rl.drawText("Shelter: 10 Citizens | Max 10 Workers", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(160, 180, 205, 255));
 
         // Click instruction tip
         if (card_hovered) {
@@ -2061,7 +2207,7 @@ fn drawPlacementTooltip(mouse_pos: rl.Vector2, check: PlacementCheck) void {
     const tip_y: i32 = @as(i32, @intFromFloat(mouse_pos.y)) + 16;
 
     const text = if (check.valid)
-        fmt("[LMB] Place House (Cost: {d} Wood) | [RMB/Esc] Cancel", .{@as(i32, @intFromFloat(HOUSE_WOOD_COST))})
+        fmt("[LMB] Place House (2x2 Grid, {d} Wood) | [RMB/Esc] Cancel", .{@as(i32, @intFromFloat(HOUSE_WOOD_COST))})
     else
         fmt("Cannot Place: {s} | [RMB/Esc] Cancel", .{check.reason});
 
