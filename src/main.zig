@@ -17,15 +17,15 @@ pub var STARTING_POPULATION: i32 = 80;
 pub var GENERATOR_HEAT_RADIUS: f32 = 12.0;
 /// Whether the generator starts in the active/turned-on state
 pub var GENERATOR_STARTS_ACTIVE: bool = false;
-/// Coal consumed per second while the generator is active (set to 0.0 for free heating)
-pub var GENERATOR_COAL_DRAIN_PER_SEC: f32 = 0.3;
-/// If true, generator will automatically turn off when coal reaches 0. If false, heating is always available.
-pub var GENERATOR_REQUIRES_COAL: bool = false;
+/// Coal consumed per second while the generator is active
+pub var GENERATOR_COAL_DRAIN_PER_SEC: f32 = 0.5;
+/// Generator requires coal fuel to operate. When fuel reaches 0, it shuts down.
+pub var GENERATOR_REQUIRES_COAL: bool = true;
 
 // --- Initial Resource Stockpiles ---
-pub var INITIAL_COAL_STOCKPILE: f32 = 120.0;
-pub var INITIAL_WOOD_STOCKPILE: f32 = 100.0;
-pub var INITIAL_STEEL_STOCKPILE: f32 = 50.0;
+pub var INITIAL_COAL_STOCKPILE: f32 = 80.0; // Starting reserve for initial generator operation
+pub var INITIAL_WOOD_STOCKPILE: f32 = 80.0;
+pub var INITIAL_STEEL_STOCKPILE: f32 = 40.0;
 pub var INITIAL_FOOD_STOCKPILE: f32 = 80.0;
 
 // --- Gathering Rates (Resources gathered per assigned worker per second) ---
@@ -57,6 +57,12 @@ pub var CAMERA_MIN_DISTANCE: f32 = 12.0;
 pub var CAMERA_MAX_DISTANCE: f32 = 80.0;
 pub var CAMERA_DEFAULT_POSITION: rl.Vector3 = .{ .x = 0.0, .y = 35.0, .z = 29.0 };
 pub var CAMERA_DEFAULT_TARGET: rl.Vector3 = .{ .x = 0.0, .y = 0.0, .z = -1.0 };
+
+// --- In-World Interaction & Screen Hit Settings ---
+/// Screen-space pixel hit radius around pile base to register clicks and hovers
+pub var PILE_SCREEN_HIT_RADIUS_PX: f32 = 65.0;
+/// In-world vertical height offset where the floating badge/card is anchored above the pile
+pub var PILE_LABEL_HEIGHT_OFFSET: f32 = 3.8;
 
 // --- Visual Color Palette ---
 pub var COLOR_SNOW_GROUND: rl.Color = rl.Color.init(236, 241, 246, 255); // Snowy white landscape
@@ -175,7 +181,13 @@ var citizens: [256]Citizen = undefined;
 var total_citizens: usize = 0;
 var smoke_particles: [32]SmokeParticle = undefined;
 var smoke_spawn_timer: f32 = 0.0;
+
 var selected_resource: ?Resource = null;
+var hovered_resource: ?Resource = null;
+
+var is_paused: bool = false;
+var should_quit: bool = false;
+var fuel_warning_timer: f32 = 0.0;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -297,6 +309,109 @@ fn assignWorkers(res: Resource, delta: i32) void {
     }
 }
 
+fn tryToggleGenerator() void {
+    if (!generator_active) {
+        // Need coal fuel to ignite
+        const coal_idx = @intFromEnum(Resource.coal);
+        if (stockpiles[coal_idx] <= 0.0) {
+            fuel_warning_timer = 3.5;
+            return;
+        }
+        generator_active = true;
+    } else {
+        generator_active = false;
+    }
+}
+
+// ============================================================================
+// IN-WORLD PILE SELECTION & UI HIT DETECTION
+// ============================================================================
+
+pub const PileUIBounds = struct {
+    center_screen: rl.Vector2,
+    badge_rect: rl.Rectangle,
+    card_rect: ?rl.Rectangle,
+    is_on_screen: bool,
+};
+
+fn getPileUIBounds(r: Resource, camera: rl.Camera3D) PileUIBounds {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+    const p = r.position();
+
+    // Pile base on the snow ground (projected to screen)
+    const base_screen = rl.getWorldToScreen(.{ .x = p.x, .y = 0.5, .z = p.z }, camera);
+
+    // Floating badge position above the pile
+    const badge_screen = rl.getWorldToScreen(.{ .x = p.x, .y = PILE_LABEL_HEIGHT_OFFSET, .z = p.z }, camera);
+
+    // Is the badge in front of the camera and within the screen viewport margin?
+    const on_screen = badge_screen.x >= -120 and badge_screen.x <= sw + 120 and
+        badge_screen.y >= -120 and badge_screen.y <= sh + 120;
+
+    // Badge dimensions
+    const badge_w: f32 = 175.0;
+    const badge_h: f32 = 28.0;
+    const badge_rect = rl.Rectangle.init(
+        badge_screen.x - badge_w / 2.0,
+        badge_screen.y - badge_h / 2.0,
+        badge_w,
+        badge_h,
+    );
+
+    // If this pile is selected, compute its on-pile worker management card rectangle
+    var card_rect: ?rl.Rectangle = null;
+    if (selected_resource == r) {
+        const card_w: f32 = 250.0;
+        const card_h: f32 = 175.0;
+        var cx = badge_screen.x - card_w / 2.0;
+        var cy = badge_screen.y - card_h - 14.0;
+
+        // If card would clip against the top status bar (y < 52), place below pile badge instead
+        if (cy < 52.0) {
+            cy = badge_screen.y + 22.0;
+        }
+
+        // Clamp to stay inside visible viewport
+        cx = std.math.clamp(cx, 16.0, sw - card_w - 16.0);
+        cy = std.math.clamp(cy, 52.0, sh - card_h - 36.0);
+
+        card_rect = rl.Rectangle.init(cx, cy, card_w, card_h);
+    }
+
+    return .{
+        .center_screen = base_screen,
+        .badge_rect = badge_rect,
+        .card_rect = card_rect,
+        .is_on_screen = on_screen,
+    };
+}
+
+fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, camera: rl.Camera3D, ray: rl.Ray) bool {
+    const ui = getPileUIBounds(r, camera);
+    if (!ui.is_on_screen) return false;
+
+    // 1. Hovering the floating badge
+    if (rl.checkCollisionPointRec(mouse_pos, ui.badge_rect)) {
+        return true;
+    }
+
+    // 2. Hovering near the 2D screen projection of the 3D pile model on the snow
+    const dist_to_base = rl.Vector2.distance(mouse_pos, ui.center_screen);
+    if (dist_to_base < PILE_SCREEN_HIT_RADIUS_PX) {
+        return true;
+    }
+
+    // 3. Hovering the 3D collision sphere in world space
+    const pos = r.position();
+    const hit = rl.getRayCollisionSphere(ray, .{ .x = pos.x, .y = 1.0, .z = pos.z }, 5.5);
+    if (hit.hit) {
+        return true;
+    }
+
+    return false;
+}
+
 // ============================================================================
 // MAIN APPLICATION
 // ============================================================================
@@ -311,6 +426,9 @@ pub fn main() !void {
     rl.initWindow(1280, 720, "Frostpunk - First Settlement");
     defer rl.closeWindow();
 
+    // Disable default ESC behavior so we can use it for our Pause Menu
+    rl.setExitKey(.null);
+
     rl.setTargetFPS(60);
 
     initGame();
@@ -324,195 +442,259 @@ pub fn main() !void {
         .projection = .perspective,
     };
 
-    while (!rl.windowShouldClose()) {
+    while (!rl.windowShouldClose() and !should_quit) {
         const dt = rl.getFrameTime();
 
         // --------------------------------------------------------------------
-        // INPUT & CONTROLS
+        // PAUSE MENU TOGGLE (ESC Key)
         // --------------------------------------------------------------------
-
-        // Toggle generator with Space or P
-        if (rl.isKeyPressed(.space) or rl.isKeyPressed(.p)) {
-            generator_active = !generator_active;
+        if (rl.isKeyPressed(.escape)) {
+            is_paused = !is_paused;
         }
 
-        // Reset camera view with R
-        if (rl.isKeyPressed(.r)) {
-            camera.position = CAMERA_DEFAULT_POSITION;
-            camera.target = CAMERA_DEFAULT_TARGET;
-        }
+        // --------------------------------------------------------------------
+        // GAMEPLAY INPUT & SIMULATION (Only when NOT paused)
+        // --------------------------------------------------------------------
+        if (!is_paused) {
+            // Toggle generator with Space or P
+            if (rl.isKeyPressed(.space) or rl.isKeyPressed(.p)) {
+                tryToggleGenerator();
+            }
 
-        // Camera Pan Controls (WASD / Arrow Keys)
-        var pan_move = rl.Vector3.zero();
-        if (rl.isKeyDown(.w) or rl.isKeyDown(.up)) pan_move.z -= 1.0;
-        if (rl.isKeyDown(.s) or rl.isKeyDown(.down)) pan_move.z += 1.0;
-        if (rl.isKeyDown(.a) or rl.isKeyDown(.left)) pan_move.x -= 1.0;
-        if (rl.isKeyDown(.d) or rl.isKeyDown(.right)) pan_move.x += 1.0;
+            // Reset camera view with R
+            if (rl.isKeyPressed(.r)) {
+                camera.position = CAMERA_DEFAULT_POSITION;
+                camera.target = CAMERA_DEFAULT_TARGET;
+            }
 
-        if (pan_move.lengthSqr() > 0.0) {
-            const norm = pan_move.scale(1.0 / pan_move.length());
-            const move_step = norm.scale(CAMERA_PAN_SPEED * dt);
-            camera.position = camera.position.add(move_step);
-            camera.target = camera.target.add(move_step);
-        }
+            // Camera Pan Controls (WASD / Arrow Keys)
+            var pan_move = rl.Vector3.zero();
+            if (rl.isKeyDown(.w) or rl.isKeyDown(.up)) pan_move.z -= 1.0;
+            if (rl.isKeyDown(.s) or rl.isKeyDown(.down)) pan_move.z += 1.0;
+            if (rl.isKeyDown(.a) or rl.isKeyDown(.left)) pan_move.x -= 1.0;
+            if (rl.isKeyDown(.d) or rl.isKeyDown(.right)) pan_move.x += 1.0;
 
-        // Camera Drag with Right or Middle Mouse Button
-        if (rl.isMouseButtonDown(.right) or rl.isMouseButtonDown(.middle)) {
-            const mouse_delta = rl.getMouseDelta();
-            const factor = 0.06;
-            const drag_step = rl.Vector3{
-                .x = -mouse_delta.x * factor,
-                .y = 0.0,
-                .z = -mouse_delta.y * factor,
-            };
-            camera.position = camera.position.add(drag_step);
-            camera.target = camera.target.add(drag_step);
-        }
+            if (pan_move.lengthSqr() > 0.0) {
+                const norm = pan_move.scale(1.0 / pan_move.length());
+                const move_step = norm.scale(CAMERA_PAN_SPEED * dt);
+                camera.position = camera.position.add(move_step);
+                camera.target = camera.target.add(move_step);
+            }
 
-        // Camera Zoom (Mouse Wheel)
-        const wheel = rl.getMouseWheelMove();
-        if (wheel != 0.0) {
-            const offset = camera.position.subtract(camera.target);
-            var distance = offset.length();
-            distance -= wheel * CAMERA_ZOOM_SPEED;
-            distance = std.math.clamp(distance, CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
-            const dir = offset.scale(1.0 / offset.length());
-            camera.position = camera.target.add(dir.scale(distance));
-        }
+            // Camera Drag with Right or Middle Mouse Button
+            if (rl.isMouseButtonDown(.right) or rl.isMouseButtonDown(.middle)) {
+                const mouse_delta = rl.getMouseDelta();
+                const factor = 0.06;
+                const drag_step = rl.Vector3{
+                    .x = -mouse_delta.x * factor,
+                    .y = 0.0,
+                    .z = -mouse_delta.y * factor,
+                };
+                camera.position = camera.position.add(drag_step);
+                camera.target = camera.target.add(drag_step);
+            }
 
-        // Mouse Raycast for 3D Selection (Selecting resource piles or generator)
-        const mouse_pos = rl.getMousePosition();
-        if (rl.isMouseButtonPressed(.left)) {
-            // Only raycast if clicking outside UI panels
-            const in_left_panel = mouse_pos.x < 360 and mouse_pos.y > 50 and mouse_pos.y < 350;
-            const in_right_panel = mouse_pos.x > @as(f32, @floatFromInt(rl.getScreenWidth())) - 320 and mouse_pos.y > 50 and mouse_pos.y < 280;
-            const in_top_bar = mouse_pos.y < 50;
+            // Camera Zoom (Mouse Wheel)
+            const wheel = rl.getMouseWheelMove();
+            if (wheel != 0.0) {
+                const offset = camera.position.subtract(camera.target);
+                var distance = offset.length();
+                distance -= wheel * CAMERA_ZOOM_SPEED;
+                distance = std.math.clamp(distance, CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+                const dir = offset.scale(1.0 / offset.length());
+                camera.position = camera.target.add(dir.scale(distance));
+            }
 
-            if (!in_left_panel and !in_right_panel and !in_top_bar) {
-                const ray = rl.getScreenToWorldRay(mouse_pos, camera);
-
-                // Check generator click
-                const gen_col = rl.getRayCollisionSphere(ray, .{ .x = 0, .y = 3, .z = 0 }, 4.0);
-                if (gen_col.hit) {
-                    generator_active = !generator_active;
+            // Keyboard shortcuts to assign/recall workers when a pile is selected:
+            if (selected_resource) |sel| {
+                if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                    assignWorkers(sel, 1);
+                } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                    assignWorkers(sel, -1);
+                } else if (rl.isKeyPressed(.c)) {
+                    assignWorkers(sel, -workers_assigned[@intFromEnum(sel)]);
+                } else if (rl.isKeyPressed(.a)) {
+                    assignWorkers(sel, getIdleCitizensCount());
+                } else if (rl.isKeyPressed(.delete) or rl.isKeyPressed(.backspace)) {
+                    selected_resource = null;
                 }
+            }
 
-                // Check pile clicks
-                var clicked_pile: ?Resource = null;
-                inline for (std.meta.tags(Resource)) |r| {
-                    const pos = r.position();
-                    const hit = rl.getRayCollisionSphere(ray, .{ .x = pos.x, .y = 1.0, .z = pos.z }, 3.5);
-                    if (hit.hit) {
-                        clicked_pile = r;
+            // Screen & UI interaction coordinates
+            const mouse_pos = rl.getMousePosition();
+            const sw_f = @as(f32, @floatFromInt(rl.getScreenWidth()));
+            const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
+
+            const in_top_bar = mouse_pos.y < 48.0;
+            const in_right_panel = mouse_pos.x > sw_f - 280.0 and mouse_pos.y > 48.0 and mouse_pos.y < 265.0;
+            const in_bottom_bar = mouse_pos.y > sh_f - 32.0;
+
+            // Check if mouse is inside the on-pile management card of the active pile
+            var in_active_card: bool = false;
+            if (selected_resource) |sel| {
+                const sel_ui = getPileUIBounds(sel, camera);
+                if (sel_ui.card_rect) |cr| {
+                    if (rl.checkCollisionPointRec(mouse_pos, cr)) {
+                        in_active_card = true;
                     }
                 }
-                selected_resource = clicked_pile;
             }
-        }
 
-        // --------------------------------------------------------------------
-        // SIMULATION UPDATE
-        // --------------------------------------------------------------------
+            const ray = rl.getScreenToWorldRay(mouse_pos, camera);
 
-        // 1. Coal consumption by generator (if active)
-        if (generator_active and GENERATOR_COAL_DRAIN_PER_SEC > 0.0) {
-            const coal_idx = @intFromEnum(Resource.coal);
-            if (GENERATOR_REQUIRES_COAL) {
+            // Detect hover over resource piles
+            hovered_resource = null;
+            if (!in_top_bar and !in_right_panel and !in_bottom_bar and !in_active_card) {
+                inline for (std.meta.tags(Resource)) |r| {
+                    if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
+                        hovered_resource = r;
+                    }
+                }
+            }
+
+            // Handle Left Mouse Click (Pile Selection & Generator Interaction)
+            if (rl.isMouseButtonPressed(.left)) {
+                // If clicked inside the active card, top bar, right panel, or bottom bar:
+                // Let the respective UI controls handle the click - do NOT alter selection!
+                if (!in_top_bar and !in_right_panel and !in_bottom_bar and !in_active_card) {
+                    var clicked_pile: ?Resource = null;
+                    inline for (std.meta.tags(Resource)) |r| {
+                        if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
+                            clicked_pile = r;
+                        }
+                    }
+
+                    if (clicked_pile) |p| {
+                        selected_resource = p;
+                    } else {
+                        // Check if generator clicked in 3D or its floating label
+                        const gen_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 3.5, .z = 0.0 }, camera);
+                        const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
+                        const dist_gen = rl.Vector2.distance(mouse_pos, gen_screen);
+                        const dist_gen_label = rl.Vector2.distance(mouse_pos, gen_label_screen);
+                        const gen_hit = rl.getRayCollisionSphere(ray, .{ .x = 0, .y = 3.5, .z = 0 }, 5.5);
+
+                        if (dist_gen < 65.0 or dist_gen_label < 60.0 or gen_hit.hit) {
+                            tryToggleGenerator();
+                        } else {
+                            // Clicked empty ground: deselect pile
+                            selected_resource = null;
+                        }
+                    }
+                }
+            }
+
+            // Set cursor style
+            if (hovered_resource != null) {
+                rl.setMouseCursor(.pointing_hand);
+            } else {
+                rl.setMouseCursor(.default);
+            }
+
+            // ----------------------------------------------------------------
+            // SIMULATION UPDATE
+            // ----------------------------------------------------------------
+
+            // Update warning timer
+            if (fuel_warning_timer > 0.0) {
+                fuel_warning_timer -= dt;
+            }
+
+            // 1. Generator coal fuel consumption
+            if (generator_active) {
+                const coal_idx = @intFromEnum(Resource.coal);
                 if (stockpiles[coal_idx] > 0.0) {
                     stockpiles[coal_idx] -= GENERATOR_COAL_DRAIN_PER_SEC * dt;
                     if (stockpiles[coal_idx] <= 0.0) {
                         stockpiles[coal_idx] = 0.0;
-                        generator_active = false; // Turned off due to lack of fuel
+                        generator_active = false; // Out of fuel!
+                        fuel_warning_timer = 4.0;
                     }
                 } else {
+                    stockpiles[coal_idx] = 0.0;
                     generator_active = false;
+                    fuel_warning_timer = 4.0;
                 }
-            } else {
-                // Free or soft-drain mode
-                stockpiles[coal_idx] = @max(0.0, stockpiles[coal_idx] - GENERATOR_COAL_DRAIN_PER_SEC * dt);
             }
-        }
 
-        // 2. Resource gathering from infinite piles
-        inline for (std.meta.tags(Resource)) |r| {
-            const idx = @intFromEnum(r);
-            const count = workers_assigned[idx];
-            if (count > 0) {
-                stockpiles[idx] += @as(f32, @floatFromInt(count)) * r.gatherRate() * dt;
+            // 2. Resource gathering from infinite piles
+            inline for (std.meta.tags(Resource)) |r| {
+                const idx = @intFromEnum(r);
+                const count = workers_assigned[idx];
+                if (count > 0) {
+                    stockpiles[idx] += @as(f32, @floatFromInt(count)) * r.gatherRate() * dt;
+                }
             }
-        }
 
-        // 3. Update Citizens (movement, wandering, and warmth calculation)
-        var warm_count: i32 = 0;
-        var cold_count: i32 = 0;
-
-        for (citizens[0..total_citizens]) |*c| {
-            // Warmth status
-            if (generator_active) {
-                const dist_to_gen = rl.Vector3.distance(c.position, .{ .x = 0, .y = 0, .z = 0 });
-                if (dist_to_gen <= GENERATOR_HEAT_RADIUS) {
-                    c.is_warm = true;
-                    warm_count += 1;
+            // 3. Citizens movement, wandering, and warmth calculation
+            for (citizens[0..total_citizens]) |*c| {
+                // Warmth calculation
+                if (generator_active) {
+                    const dist_to_gen = rl.Vector3.distance(c.position, .{ .x = 0, .y = 0, .z = 0 });
+                    c.is_warm = (dist_to_gen <= GENERATOR_HEAT_RADIUS);
                 } else {
                     c.is_warm = false;
-                    cold_count += 1;
                 }
-            } else {
-                c.is_warm = false;
-                cold_count += 1;
-            }
 
-            // Movement towards target position
-            const diff = c.target_pos.subtract(c.position);
-            const dist = diff.length();
-            if (dist > 0.25) {
-                const dir = diff.scale(1.0 / dist);
-                const step = @min(dist, c.speed * dt);
-                c.position = c.position.add(dir.scale(step));
-            } else {
-                c.wander_timer -= dt;
-                if (c.wander_timer <= 0.0) {
-                    c.wander_timer = randomFloat(2.0, 5.5);
-                    c.target_pos = pickTargetForRole(c.role);
+                // Movement towards target position
+                const diff = c.target_pos.subtract(c.position);
+                const dist = diff.length();
+                if (dist > 0.25) {
+                    const dir = diff.scale(1.0 / dist);
+                    const step = @min(dist, c.speed * dt);
+                    c.position = c.position.add(dir.scale(step));
+                } else {
+                    c.wander_timer -= dt;
+                    if (c.wander_timer <= 0.0) {
+                        c.wander_timer = randomFloat(2.0, 5.5);
+                        c.target_pos = pickTargetForRole(c.role);
+                    }
                 }
             }
-        }
 
-        // 4. Update Smoke / Steam Particles
-        if (generator_active) {
-            smoke_spawn_timer += dt;
-            if (smoke_spawn_timer >= 0.12) {
-                smoke_spawn_timer = 0.0;
-                for (&smoke_particles) |*p| {
-                    if (!p.active) {
-                        p.active = true;
-                        p.position = .{
-                            .x = randomFloat(-0.2, 0.2),
-                            .y = 11.2,
-                            .z = randomFloat(-0.2, 0.2),
-                        };
-                        p.velocity = .{
-                            .x = randomFloat(-0.4, 0.4),
-                            .y = randomFloat(2.5, 4.0),
-                            .z = randomFloat(-0.4, 0.4),
-                        };
-                        p.alpha = 0.85;
-                        p.size = randomFloat(0.4, 0.7);
-                        break;
+            // 4. Generator smoke/steam particles
+            if (generator_active) {
+                smoke_spawn_timer += dt;
+                if (smoke_spawn_timer >= 0.12) {
+                    smoke_spawn_timer = 0.0;
+                    for (&smoke_particles) |*p| {
+                        if (!p.active) {
+                            p.active = true;
+                            p.position = .{
+                                .x = randomFloat(-0.2, 0.2),
+                                .y = 11.2,
+                                .z = randomFloat(-0.2, 0.2),
+                            };
+                            p.velocity = .{
+                                .x = randomFloat(-0.4, 0.4),
+                                .y = randomFloat(2.5, 4.0),
+                                .z = randomFloat(-0.4, 0.4),
+                            };
+                            p.alpha = 0.85;
+                            p.size = randomFloat(0.4, 0.7);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            for (&smoke_particles) |*p| {
+                if (p.active) {
+                    p.position = p.position.add(p.velocity.scale(dt));
+                    p.alpha -= dt * 0.45;
+                    p.size += dt * 0.5;
+                    if (p.alpha <= 0.0) {
+                        p.active = false;
                     }
                 }
             }
         }
 
-        for (&smoke_particles) |*p| {
-            if (p.active) {
-                p.position = p.position.add(p.velocity.scale(dt));
-                p.alpha -= dt * 0.45;
-                p.size += dt * 0.5;
-                if (p.alpha <= 0.0) {
-                    p.active = false;
-                }
-            }
+        // Compute warm and cold citizens count for rendering
+        var warm_count: i32 = 0;
+        var cold_count: i32 = 0;
+        for (citizens[0..total_citizens]) |c| {
+            if (c.is_warm) warm_count += 1 else cold_count += 1;
         }
 
         // --------------------------------------------------------------------
@@ -530,19 +712,16 @@ pub fn main() !void {
         // Ground Plane (Snow landscape)
         rl.drawPlane(.{ .x = 0.0, .y = -0.01, .z = 0.0 }, .{ .x = 220.0, .y = 220.0 }, COLOR_SNOW_GROUND);
 
-        // Concentric District Rings (evoking Frostpunk's circular city blueprint)
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 14.0, 14.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 22.0, 22.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 32.0, 32.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 44.0, 44.0, 0.01, 64, COLOR_SNOW_RINGS);
+        // Concentric District Rings (Frostpunk circular blueprint)
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 12.0, 12.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 20.0, 20.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 30.0, 30.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 42.0, 42.0, 0.01, 64, COLOR_SNOW_RINGS);
 
         // Heat Zone on Ground (Visible when Generator is ON)
         if (generator_active) {
-            // Warm translucent amber disc
             rl.drawCircle3D(.{ .x = 0, .y = 0.03, .z = 0 }, GENERATOR_HEAT_RADIUS, .{ .x = 1, .y = 0, .z = 0 }, 90.0, COLOR_HEAT_ZONE);
-            // Outer glowing heat boundary ring
             rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS, GENERATOR_HEAT_RADIUS, 0.05, 64, COLOR_HEAT_ZONE_RING);
-            // Inner intensity ring
             rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS * 0.5, GENERATOR_HEAT_RADIUS * 0.5, 0.04, 48, rl.Color.init(255, 175, 60, 110));
         }
 
@@ -558,7 +737,7 @@ pub fn main() !void {
         }
 
         // Draw The 4 Infinite Resource Piles
-        drawResourcePiles(selected_resource);
+        drawResourcePiles(selected_resource, hovered_resource);
 
         // Draw Citizens (Minimal 3D figures: body rectangle + head sphere)
         for (citizens[0..total_citizens]) |c| {
@@ -591,8 +770,13 @@ pub fn main() !void {
 
         camera.end();
 
-        // 3. 2D HUD & Management UI
+        // 3. 2D HUD & Interactive Management UI
         drawHUD(warm_count, cold_count, camera);
+
+        // 4. Pause Menu Modal Overlay (if paused)
+        if (is_paused) {
+            drawPauseMenu();
+        }
     }
 }
 
@@ -603,7 +787,7 @@ pub fn main() !void {
 fn drawPowerPlant(active: bool) void {
     const vent_color = if (active) COLOR_GENERATOR_LIT else COLOR_GENERATOR_UNLIT;
 
-    // Base Tier 1: Wide octagonal-like base block
+    // Base Tier 1: Wide base block
     rl.drawCube(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, COLOR_GENERATOR_BASE);
     rl.drawCubeWires(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, rl.Color.init(20, 22, 26, 255));
 
@@ -621,7 +805,7 @@ fn drawPowerPlant(active: bool) void {
     rl.drawCube(.{ .x = 2.22, .y = 3.4, .z = 0 }, 0.15, 1.6, 2.4, vent_color);
     rl.drawCube(.{ .x = -2.22, .y = 3.4, .z = 0 }, 0.15, 1.6, 2.4, vent_color);
 
-    // Boiler Drum (Sphere atop the furnace block)
+    // Boiler Drum (Sphere atop furnace block)
     rl.drawSphere(.{ .x = 0, .y = 5.8, .z = 0 }, 2.3, rl.Color.init(65, 70, 80, 255));
     rl.drawSphereWires(.{ .x = 0, .y = 5.8, .z = 0 }, 2.32, 12, 12, rl.Color.init(28, 30, 36, 180));
 
@@ -634,11 +818,10 @@ fn drawPowerPlant(active: bool) void {
     rl.drawCylinder(.{ .x = 0, .y = 11.1, .z = 0 }, 1.38, 1.38, 0.35, 16, crown_color);
 }
 
-fn drawResourcePiles(selected: ?Resource) void {
-    // 1. COAL PILE (North-West)
+fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
+    // 1. COAL PILE
     {
         const pos = COAL_PILE_POSITION;
-        // Heap of dark jagged charcoal blocks
         rl.drawCube(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, COLOR_COAL_PILE);
         rl.drawCubeWires(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, rl.Color.init(10, 10, 14, 255));
 
@@ -649,14 +832,17 @@ fn drawResourcePiles(selected: ?Resource) void {
         rl.drawCube(.{ .x = pos.x + 0.1, .y = 2.4, .z = pos.z }, 1.4, 0.9, 1.4, rl.Color.init(22, 22, 26, 255));
 
         if (selected == .coal) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.0, 4.0, 0.1, 32, rl.Color.gold);
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+        } else if (hovered == .coal) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
         }
     }
 
-    // 2. WOOD PILE (North-East)
+    // 2. WOOD PILE
     {
         const pos = WOOD_PILE_POSITION;
-        // Stack of timber logs / rectangular wooden beams
         rl.drawCube(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, COLOR_WOOD_PILE);
         rl.drawCubeWires(.{ .x = pos.x - 1.2, .y = 0.45, .z = pos.z }, 1.0, 0.9, 4.6, rl.Color.init(80, 45, 20, 255));
 
@@ -673,14 +859,17 @@ fn drawResourcePiles(selected: ?Resource) void {
         rl.drawCubeWires(.{ .x = pos.x, .y = 2.1, .z = pos.z }, 1.0, 0.8, 4.2, rl.Color.init(90, 55, 25, 255));
 
         if (selected == .wood) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.0, 4.0, 0.1, 32, rl.Color.gold);
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+        } else if (hovered == .wood) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
         }
     }
 
-    // 3. STEEL PILE (South-West)
+    // 3. STEEL PILE
     {
         const pos = STEEL_PILE_POSITION;
-        // Stack of metallic girders, steel plates, and crates
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, COLOR_STEEL_PILE);
         rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 1.0 }, 4.8, 0.85, 1.2, rl.Color.init(80, 95, 110, 255));
 
@@ -696,14 +885,17 @@ fn drawResourcePiles(selected: ?Resource) void {
         rl.drawCube(.{ .x = pos.x + 1.8, .y = 0.65, .z = pos.z + 1.9 }, 1.3, 1.3, 1.3, rl.Color.init(130, 145, 165, 255));
 
         if (selected == .steel) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.0, 4.0, 0.1, 32, rl.Color.gold);
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+        } else if (hovered == .steel) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
         }
     }
 
-    // 4. FOOD CACHE (South-East)
+    // 4. FOOD CACHE
     {
         const pos = FOOD_PILE_POSITION;
-        // Supply crates and ration barrels
         rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, COLOR_FOOD_PILE);
         rl.drawCubeWires(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, rl.Color.init(100, 25, 20, 255));
 
@@ -716,7 +908,11 @@ fn drawResourcePiles(selected: ?Resource) void {
         rl.drawSphere(.{ .x = pos.x - 0.9, .y = 2.2, .z = pos.z - 0.7 }, 0.55, rl.Color.init(215, 185, 145, 255));
 
         if (selected == .food) {
-            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.0, 4.0, 0.1, 32, rl.Color.gold);
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 205, 50, 50));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+        } else if (hovered == .food) {
+            rl.drawCircle3D(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 40));
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(200, 220, 255, 180));
         }
     }
 }
@@ -742,20 +938,168 @@ fn drawWorldLabels(camera: rl.Camera3D) void {
         rl.drawText(text, bx, by, 11, if (generator_active) rl.Color.init(255, 205, 60, 255) else rl.Color.init(180, 185, 195, 255));
     }
 
-    // 2. Resource Piles floating labels
+    // 2. Resource Piles floating badges & On-Pile Worker Assignment Stations
     inline for (std.meta.tags(Resource)) |r| {
-        const p = r.position();
-        const screen_pos = rl.getWorldToScreen(.{ .x = p.x, .y = 3.6, .z = p.z }, camera);
-        if (screen_pos.x > 30 and screen_pos.x < sw - 30 and screen_pos.y > 45 and screen_pos.y < sh - 35) {
+        const ui = getPileUIBounds(r, camera);
+        if (ui.is_on_screen) {
             const assigned = workers_assigned[@intFromEnum(r)];
-            const text = fmt("{s} Pile ({d} workers)", .{ r.name(), assigned });
-            const tw = rl.measureText(text, 11);
-            const bx = @as(i32, @intFromFloat(screen_pos.x)) - @divTrunc(tw, 2);
-            const by = @as(i32, @intFromFloat(screen_pos.y));
+            const is_selected = (selected_resource == r);
+            const is_hovered = (hovered_resource == r);
 
-            rl.drawRectangle(bx - 6, by - 3, tw + 12, 18, rl.Color.init(18, 22, 28, 215));
-            rl.drawRectangleLines(bx - 6, by - 3, tw + 12, 18, r.color());
-            rl.drawText(text, bx, by, 11, rl.Color.white);
+            if (!is_selected) {
+                // --- Unselected State: Floating Badge ---
+                const br = ui.badge_rect;
+                const bg_color = if (is_hovered) rl.Color.init(32, 40, 52, 245) else rl.Color.init(18, 22, 28, 230);
+                const border_color = if (is_hovered) rl.Color.init(255, 215, 80, 255) else r.color();
+
+                rl.drawRectangleRounded(br, 0.25, 6, bg_color);
+                rl.drawRectangleRoundedLinesEx(br, 0.25, 6, if (is_hovered) 2.0 else 1.2, border_color);
+
+                // Resource color pill
+                rl.drawRectangle(@intFromFloat(br.x + 8), @intFromFloat(br.y + 7), 12, 14, r.color());
+
+                // Label text: Name & worker count
+                _ = rl.drawText(
+                    fmt("{s} Pile", .{r.name()}),
+                    @intFromFloat(br.x + 25),
+                    @intFromFloat(br.y + 4),
+                    11,
+                    if (is_hovered) rl.Color.init(255, 225, 120, 255) else rl.Color.white,
+                );
+
+                const count_text = fmt("{d} workers", .{assigned});
+                _ = rl.drawText(
+                    count_text,
+                    @intFromFloat(br.x + 25),
+                    @intFromFloat(br.y + 15),
+                    10,
+                    if (assigned > 0) rl.Color.init(120, 230, 140, 255) else rl.Color.init(150, 165, 180, 255),
+                );
+
+                // Right manage prompt
+                _ = rl.drawText(
+                    if (is_hovered) "CLICK" else "MANAGE",
+                    @intFromFloat(br.x + br.width - 48),
+                    @intFromFloat(br.y + 9),
+                    9,
+                    if (is_hovered) rl.Color.init(255, 215, 80, 255) else rl.Color.init(130, 150, 175, 255),
+                );
+            } else {
+                // --- Selected State: On-Pile Worker Management Station ---
+                if (ui.card_rect) |cr| {
+                    const idle_count = getIdleCitizensCount();
+                    const rate = @as(f32, @floatFromInt(assigned)) * r.gatherRate();
+
+                    // Connecting line from card to pile base/badge point
+                    const anchor_x = ui.badge_rect.x + ui.badge_rect.width / 2.0;
+                    const anchor_y = ui.badge_rect.y + ui.badge_rect.height / 2.0;
+                    const card_bottom_y = if (cr.y < anchor_y) cr.y + cr.height else cr.y;
+                    rl.drawLineEx(
+                        .{ .x = cr.x + cr.width / 2.0, .y = card_bottom_y },
+                        .{ .x = anchor_x, .y = anchor_y },
+                        2.0,
+                        rl.Color.init(245, 195, 65, 180),
+                    );
+
+                    // Main card background
+                    rl.drawRectangleRounded(cr, 0.06, 8, rl.Color.init(18, 22, 30, 250));
+                    rl.drawRectangleRoundedLinesEx(cr, 0.06, 8, 2.0, rl.Color.init(245, 195, 65, 255));
+
+                    // Header: Resource color icon + Title
+                    rl.drawRectangle(@intFromFloat(cr.x + 12), @intFromFloat(cr.y + 11), 12, 14, r.color());
+                    _ = rl.drawText(
+                        fmt("{s} PILE", .{r.name()}),
+                        @intFromFloat(cr.x + 30),
+                        @intFromFloat(cr.y + 10),
+                        15,
+                        rl.Color.init(245, 205, 70, 255),
+                    );
+
+                    // Close button [x]
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(cr.x + cr.width - 28, cr.y + 8, 20, 20), "x")) {
+                            selected_resource = null;
+                        }
+                    }
+
+                    // Subtitle
+                    rl.drawText("Infinite Gathering Point", @intFromFloat(cr.x + 12), @intFromFloat(cr.y + 29), 10, rl.Color.init(140, 175, 210, 255));
+
+                    // Divider line 1
+                    rl.drawLine(
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 43),
+                        @intFromFloat(cr.x + cr.width - 12),
+                        @intFromFloat(cr.y + 43),
+                        rl.Color.init(55, 65, 80, 255),
+                    );
+
+                    // Status info
+                    _ = rl.drawText(
+                        fmt("Assigned: {d} workers", .{assigned}),
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 49),
+                        13,
+                        rl.Color.white,
+                    );
+
+                    _ = rl.drawText(
+                        fmt("Yield: +{d:.1} {s}/sec", .{ rate, r.name() }),
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 67),
+                        12,
+                        rl.Color.init(120, 230, 140, 255),
+                    );
+
+                    _ = rl.drawText(
+                        fmt("Idle Citizens: {d} / {d}", .{ idle_count, total_citizens }),
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 84),
+                        12,
+                        if (idle_count > 0) rl.Color.init(190, 220, 245, 255) else rl.Color.init(240, 140, 140, 255),
+                    );
+
+                    // Divider line 2
+                    rl.drawLine(
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 102),
+                        @intFromFloat(cr.x + cr.width - 12),
+                        @intFromFloat(cr.y + 102),
+                        rl.Color.init(50, 60, 75, 255),
+                    );
+
+                    // Worker Allocation Buttons (Only clickable when not paused)
+                    if (!is_paused) {
+                        // Row 1: Incremental Buttons [-5] [-1] [+1] [+5]
+                        const btn_y1 = cr.y + 108.0;
+                        const btn_h1: f32 = 26.0;
+
+                        if (rg.button(rl.Rectangle.init(cr.x + 12, btn_y1, 46, btn_h1), "-5")) {
+                            assignWorkers(r, -5);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 64, btn_y1, 40, btn_h1), "-1")) {
+                            assignWorkers(r, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 110, btn_y1, 40, btn_h1), "+1")) {
+                            assignWorkers(r, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 156, btn_y1, 46, btn_h1), "+5")) {
+                            assignWorkers(r, 5);
+                        }
+
+                        // Row 2: Bulk Buttons [Recall All] [Assign All Idle]
+                        const btn_y2 = cr.y + 140.0;
+                        const btn_h2: f32 = 24.0;
+
+                        if (rg.button(rl.Rectangle.init(cr.x + 12, btn_y2, 106, btn_h2), "Recall All")) {
+                            assignWorkers(r, -assigned);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 124, btn_y2, 114, btn_h2), "+All Idle")) {
+                            assignWorkers(r, idle_count);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -763,7 +1107,6 @@ fn drawWorldLabels(camera: rl.Camera3D) void {
 fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
-    const idle_count = getIdleCitizensCount();
 
     // ------------------------------------------------------------------------
     // 3D FLOATING WORLD LABELS
@@ -794,7 +1137,12 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
         const idx = @intFromEnum(r);
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
-        const rate = @as(f32, @floatFromInt(workers)) * r.gatherRate();
+
+        // Net rate calculation (Coal accounts for generator fuel consumption)
+        const net_rate: f32 = if (r == .coal)
+            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
+        else
+            @as(f32, @floatFromInt(workers)) * r.gatherRate();
 
         // Tag dot
         rl.drawRectangle(cur_x, 15, 10, 16, r.color());
@@ -808,10 +1156,17 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
             rl.Color.white,
         );
 
-        // Gathering rate text
-        const rate_color = if (workers > 0) rl.Color.init(120, 230, 140, 255) else rl.Color.init(140, 145, 155, 255);
+        // Gathering rate text (Red if coal is draining, green if positive, gray if zero)
+        const rate_color = if (net_rate > 0.01)
+            rl.Color.init(120, 230, 140, 255)
+        else if (net_rate < -0.01)
+            rl.Color.init(255, 100, 90, 255)
+        else
+            rl.Color.init(140, 145, 155, 255);
+
+        const rate_sign = if (net_rate > 0.001) "+" else "";
         _ = rl.drawText(
-            fmt("+{d:.1}/s", .{rate}),
+            fmt("{s}{d:.1}/s", .{ rate_sign, net_rate }),
             cur_x + 14,
             27,
             11,
@@ -849,107 +1204,41 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     );
 
     // ------------------------------------------------------------------------
-    // LEFT PANEL: WORKFORCE ASSIGNMENT
+    // FUEL WARNING BANNER (If out of coal or cannot ignite)
     // ------------------------------------------------------------------------
-    const panel_x: f32 = 16.0;
-    const panel_y: f32 = top_bar_height + 14.0;
-    const panel_w: f32 = 300.0;
-    const panel_h: f32 = 250.0;
-
-    // Panel background & border
-    rl.drawRectangleRounded(
-        rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h),
-        0.04,
-        8,
-        rl.Color.init(22, 26, 32, 225),
-    );
-    rl.drawRectangleRoundedLinesEx(
-        rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h),
-        0.04,
-        8,
-        1.5,
-        rl.Color.init(55, 65, 78, 255),
-    );
-
-    // Panel Header
-    rl.drawText("WORKFORCE ALLOCATION", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 16, rl.Color.init(240, 245, 250, 255));
-    _ = rl.drawText(
-        fmt("Idle Citizens: {d} / {d}", .{ idle_count, total_citizens }),
-        @intFromFloat(panel_x + 14),
-        @intFromFloat(panel_y + 32),
-        13,
-        if (idle_count > 0) rl.Color.init(120, 220, 150, 255) else rl.Color.init(240, 160, 160, 255),
-    );
-
-    // Separator line
-    rl.drawLine(
-        @intFromFloat(panel_x + 14),
-        @intFromFloat(panel_y + 52),
-        @intFromFloat(panel_x + panel_w - 14),
-        @intFromFloat(panel_y + 52),
-        rl.Color.init(50, 58, 70, 255),
-    );
-
-    // Resource worker rows
-    var row_y = panel_y + 60.0;
-    inline for (std.meta.tags(Resource)) |r| {
-        const idx = @intFromEnum(r);
-        const assigned = workers_assigned[idx];
-
-        // Selection highlight if clicked in 3D
-        if (selected_resource == r) {
-            rl.drawRectangleRounded(
-                rl.Rectangle.init(panel_x + 8, row_y - 3, panel_w - 16, 28),
-                0.15,
-                4,
-                rl.Color.init(255, 200, 50, 35),
-            );
-        }
-
-        // Color badge & label
-        rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(row_y + 3), 10, 16, r.color());
-        _ = rl.drawText(
-            fmt("{s}: {d}", .{ r.name(), assigned }),
-            @intFromFloat(panel_x + 30),
-            @intFromFloat(row_y + 3),
-            15,
+    if (fuel_warning_timer > 0.0) {
+        const banner_h: f32 = 26.0;
+        const banner_y: f32 = top_bar_height;
+        rl.drawRectangle(0, @intFromFloat(banner_y), screen_w, @intFromFloat(banner_h), rl.Color.init(190, 30, 30, 235));
+        const warn_msg = "WARNING: Insufficient Coal! The Generator needs coal to operate. Click the Coal Pile to assign workers.";
+        const tw = rl.measureText(warn_msg, 13);
+        rl.drawText(
+            warn_msg,
+            @divTrunc(screen_w - tw, 2),
+            @intFromFloat(banner_y + 6),
+            13,
             rl.Color.white,
         );
-
-        // Reallocation Buttons: [-5] [-1] [+1] [+5]
-        const btn_y = row_y - 1;
-        const btn_h = 24;
-
-        if (rg.button(rl.Rectangle.init(panel_x + 112, btn_y, 30, btn_h), "-5")) {
-            assignWorkers(r, -5);
-        }
-        if (rg.button(rl.Rectangle.init(panel_x + 145, btn_y, 26, btn_h), "-1")) {
-            assignWorkers(r, -1);
-        }
-        if (rg.button(rl.Rectangle.init(panel_x + 174, btn_y, 26, btn_h), "+1")) {
-            assignWorkers(r, 1);
-        }
-        if (rg.button(rl.Rectangle.init(panel_x + 203, btn_y, 30, btn_h), "+5")) {
-            assignWorkers(r, 5);
-        }
-
-        // Quick rate display
-        _ = rl.drawText(
-            fmt("+{d:.1}", .{@as(f32, @floatFromInt(assigned)) * r.gatherRate()}),
-            @intFromFloat(panel_x + 242),
-            @intFromFloat(row_y + 5),
-            12,
-            rl.Color.init(160, 210, 160, 255),
-        );
-
-        row_y += 44.0;
     }
 
     // ------------------------------------------------------------------------
-    // RIGHT PANEL: POWER PLANT (GENERATOR) CONTROL
+    // IN-WORLD WORKER MANAGEMENT TIP (When no pile is selected)
+    // ------------------------------------------------------------------------
+    if (selected_resource == null) {
+        rl.drawText(
+            "TIP: Click any resource pile in the map to assign or remove workers directly on site",
+            18,
+            @intFromFloat(@as(f32, @floatFromInt(screen_h)) - 55.0),
+            13,
+            rl.Color.init(140, 165, 185, 220),
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // RIGHT PANEL: POWER PLANT (GENERATOR) CONTROL & COAL STATUS
     // ------------------------------------------------------------------------
     const gen_panel_w: f32 = 260.0;
-    const gen_panel_h: f32 = 185.0;
+    const gen_panel_h: f32 = 200.0;
     const gen_panel_x: f32 = @as(f32, @floatFromInt(screen_w)) - gen_panel_w - 16.0;
     const gen_panel_y: f32 = top_bar_height + 14.0;
 
@@ -980,9 +1269,16 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     }
 
     // Toggle Button
-    const btn_label = if (generator_active) "TURN GENERATOR OFF" else "TURN GENERATOR ON";
+    const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
+    const btn_label = if (generator_active)
+        "TURN GENERATOR OFF"
+    else if (coal_amount > 0.0)
+        "TURN GENERATOR ON"
+    else
+        "IGNITE (NO COAL!)";
+
     if (rg.button(rl.Rectangle.init(gen_panel_x + 14, gen_panel_y + 56, gen_panel_w - 28, 36), btn_label)) {
-        generator_active = !generator_active;
+        tryToggleGenerator();
     }
 
     // Generator details
@@ -1002,17 +1298,48 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
         if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
     );
 
-    const coal_mode_str: [:0]const u8 = if (GENERATOR_REQUIRES_COAL)
-        fmt("Coal Drain: {d:.1} / sec", .{GENERATOR_COAL_DRAIN_PER_SEC})
-    else
-        "Coal Drain: FREE (Infinite fuel)";
+    // Coal fuel status and burn time
     _ = rl.drawText(
-        coal_mode_str,
+        fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
         @intFromFloat(gen_panel_x + 14),
         @intFromFloat(gen_panel_y + 142),
-        12,
-        rl.Color.init(150, 180, 210, 255),
+        13,
+        if (coal_amount > 10.0) rl.Color.white else rl.Color.init(255, 120, 100, 255),
     );
+
+    if (generator_active) {
+        const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
+        const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
+        if (net_coal < -0.01) {
+            const secs_left = @max(0.0, coal_amount / (-net_coal));
+            const total_s = @as(i32, @intFromFloat(secs_left));
+            const mins = @divTrunc(total_s, 60);
+            const secs = @rem(total_s, 60);
+            _ = rl.drawText(
+                fmt("Fuel Depletes In: ~{d}m {d:0>2}s", .{ mins, secs }),
+                @intFromFloat(gen_panel_x + 14),
+                @intFromFloat(gen_panel_y + 162),
+                12,
+                rl.Color.init(255, 175, 70, 255),
+            );
+        } else {
+            _ = rl.drawText(
+                "Fuel Sustainable (Surplus)",
+                @intFromFloat(gen_panel_x + 14),
+                @intFromFloat(gen_panel_y + 162),
+                12,
+                rl.Color.init(120, 230, 140, 255),
+            );
+        }
+    } else {
+        _ = rl.drawText(
+            fmt("Burn Rate: {d:.1} coal/sec", .{GENERATOR_COAL_DRAIN_PER_SEC}),
+            @intFromFloat(gen_panel_x + 14),
+            @intFromFloat(gen_panel_y + 162),
+            12,
+            rl.Color.init(150, 170, 190, 255),
+        );
+    }
 
     // ------------------------------------------------------------------------
     // BOTTOM BAR: KEYBINDINGS HINT
@@ -1022,10 +1349,88 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     rl.drawRectangle(0, @intFromFloat(bot_y), screen_w, @intFromFloat(bot_h), rl.Color.init(18, 22, 28, 220));
 
     rl.drawText(
-        "CONTROLS: [W/A/S/D / Arrows] Pan Camera  |  [Mouse Wheel] Zoom  |  [Right Click Drag] Pan  |  [Space / P] Toggle Plant  |  [R] Reset View",
+        "CONTROLS: [Click Pile] Manage Workers On-Site (+/-)  |  [W/A/S/D / Arrows / RMB Drag] Pan  |  [Wheel] Zoom  |  [Space / P] Toggle Plant  |  [ESC] Pause Menu",
         18,
         @intFromFloat(bot_y + 8),
         13,
         rl.Color.init(180, 195, 210, 255),
     );
+}
+
+// ============================================================================
+// PAUSE MENU MODAL
+// ============================================================================
+
+fn drawPauseMenu() void {
+    const screen_w = rl.getScreenWidth();
+    const screen_h = rl.getScreenHeight();
+
+    // Dark semi-transparent background overlay
+    rl.drawRectangle(0, 0, screen_w, screen_h, rl.Color.init(10, 14, 20, 200));
+
+    const modal_w: f32 = 340.0;
+    const modal_h: f32 = 230.0;
+    const modal_x: f32 = (@as(f32, @floatFromInt(screen_w)) - modal_w) / 2.0;
+    const modal_y: f32 = (@as(f32, @floatFromInt(screen_h)) - modal_h) / 2.0;
+
+    // Modal background card
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(modal_x, modal_y, modal_w, modal_h),
+        0.06,
+        8,
+        rl.Color.init(24, 28, 36, 255),
+    );
+    rl.drawRectangleRoundedLinesEx(
+        rl.Rectangle.init(modal_x, modal_y, modal_w, modal_h),
+        0.06,
+        8,
+        2.0,
+        rl.Color.init(80, 105, 135, 255),
+    );
+
+    // Title
+    const title = "GAME PAUSED";
+    const title_w = rl.measureText(title, 22);
+    rl.drawText(
+        title,
+        @intFromFloat(modal_x + (modal_w - @as(f32, @floatFromInt(title_w))) / 2.0),
+        @intFromFloat(modal_y + 26),
+        22,
+        rl.Color.init(245, 205, 70, 255),
+    );
+
+    // Subtitle
+    const subtitle = "City operations are suspended";
+    const sub_w = rl.measureText(subtitle, 13);
+    rl.drawText(
+        subtitle,
+        @intFromFloat(modal_x + (modal_w - @as(f32, @floatFromInt(sub_w))) / 2.0),
+        @intFromFloat(modal_y + 56),
+        13,
+        rl.Color.init(160, 175, 190, 255),
+    );
+
+    // Separator line
+    rl.drawLine(
+        @intFromFloat(modal_x + 30),
+        @intFromFloat(modal_y + 78),
+        @intFromFloat(modal_x + modal_w - 30),
+        @intFromFloat(modal_y + 78),
+        rl.Color.init(50, 62, 78, 255),
+    );
+
+    // Buttons
+    const btn_w: f32 = 220.0;
+    const btn_h: f32 = 38.0;
+    const btn_x: f32 = modal_x + (modal_w - btn_w) / 2.0;
+
+    // Continue Button
+    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 98, btn_w, btn_h), "CONTINUE")) {
+        is_paused = false;
+    }
+
+    // Quit Button
+    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 152, btn_w, btn_h), "QUIT GAME")) {
+        should_quit = true;
+    }
 }
