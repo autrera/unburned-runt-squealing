@@ -59,9 +59,13 @@ pub var CAMERA_DEFAULT_POSITION: rl.Vector3 = .{ .x = 0.0, .y = 35.0, .z = 29.0 
 pub var CAMERA_DEFAULT_TARGET: rl.Vector3 = .{ .x = 0.0, .y = 0.0, .z = -1.0 };
 
 // --- Performance & Frame Rate Settings ---
-/// Target frame rate (0 = uncapped / unlimited frame rate)
+/// Whether to dynamically limit the frame rate to match the current monitor's refresh rate (e.g. 60Hz, 160Hz)
+pub var LIMIT_FPS_TO_REFRESH_RATE: bool = true;
+/// Fallback target frame rate when LIMIT_FPS_TO_REFRESH_RATE is false (0 = uncapped / unlimited frame rate)
 pub var TARGET_FPS: i32 = 0;
-/// Whether to enable VSync (false for uncapped frame rate)
+/// Currently active frame rate limit applied to raylib
+pub var ACTIVE_FPS_LIMIT: i32 = 60;
+/// Whether to enable VSync (false when using setTargetFPS)
 pub var ENABLE_VSYNC: bool = false;
 
 // --- In-World Interaction & Screen Hit Settings ---
@@ -994,6 +998,26 @@ fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, cached: CachedSceneUI, ray:
     return false;
 }
 
+/// Query the current monitor refresh rate and apply it to raylib's frame limiter.
+/// Automatically adapts when the game is moved between different displays (e.g. 60Hz laptop vs 160Hz gaming monitor).
+pub fn updateMonitorRefreshRate(force: bool) void {
+    if (LIMIT_FPS_TO_REFRESH_RATE) {
+        const mon = rl.getCurrentMonitor();
+        const raw_hz = rl.getMonitorRefreshRate(mon);
+        const target_hz: i32 = if (raw_hz > 0) raw_hz else 60;
+        if (force or target_hz != ACTIVE_FPS_LIMIT) {
+            ACTIVE_FPS_LIMIT = target_hz;
+            rl.setTargetFPS(target_hz);
+            std.debug.print("[Display] Screen refresh rate detected: {d} Hz on monitor {d}\n", .{ target_hz, mon });
+        }
+    } else {
+        if (force or TARGET_FPS != ACTIVE_FPS_LIMIT) {
+            ACTIVE_FPS_LIMIT = TARGET_FPS;
+            rl.setTargetFPS(TARGET_FPS);
+        }
+    }
+}
+
 // ============================================================================
 // MAIN APPLICATION
 // ============================================================================
@@ -1011,10 +1035,8 @@ pub fn main() !void {
     // Disable default ESC behavior so we can use it for our Pause Menu
     rl.setExitKey(.null);
 
-    // Set target FPS if capped; otherwise leaving it unset allows uncapped frame rates
-    if (TARGET_FPS > 0) {
-        rl.setTargetFPS(TARGET_FPS);
-    }
+    // Detect display refresh rate and limit FPS accordingly
+    updateMonitorRefreshRate(true);
 
     initGame();
 
@@ -1029,9 +1051,17 @@ pub fn main() !void {
 
     var warm_count: i32 = 0;
     var cold_count: i32 = 0;
+    var monitor_check_timer: f32 = 0.0;
 
     while (!rl.windowShouldClose() and !should_quit) {
         const dt = rl.getFrameTime();
+
+        // Periodically verify monitor refresh rate (e.g. window dragged across 60Hz/160Hz monitors)
+        monitor_check_timer += dt;
+        if (monitor_check_timer >= 0.5) {
+            monitor_check_timer = 0.0;
+            updateMonitorRefreshRate(false);
+        }
 
         // --------------------------------------------------------------------
         // PAUSE MENU / ESC Key handling
@@ -2323,7 +2353,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
 
     // Resource Stockpiles & Gathering Rates (Dynamically spaced)
     const res_start_x: i32 = 205;
-    const fps_badge_w: i32 = 76;
+    const fps_badge_w: i32 = if (LIMIT_FPS_TO_REFRESH_RATE) 124 else 76;
     const fps_box_x: i32 = screen_w - fps_badge_w - 12;
 
     const pop_box_w: i32 = 360;
@@ -2428,10 +2458,20 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
 
     // FPS Display at the top-right corner of the screen
     const fps = rl.getFPS();
-    const fps_text = fmt("{d} FPS", .{fps});
+    const fps_text = if (LIMIT_FPS_TO_REFRESH_RATE)
+        fmt("{d} FPS ({d}Hz)", .{ fps, ACTIVE_FPS_LIMIT })
+    else if (TARGET_FPS > 0)
+        fmt("{d} FPS (Cap {d})", .{ fps, TARGET_FPS })
+    else
+        fmt("{d} FPS", .{fps});
+
     const fps_tw = rl.measureText(fps_text, 13);
     const actual_fps_w: i32 = @max(fps_badge_w, fps_tw + 18);
     const actual_fps_x: i32 = screen_w - actual_fps_w - 12;
+
+    const target_for_color = if (LIMIT_FPS_TO_REFRESH_RATE) ACTIVE_FPS_LIMIT else if (TARGET_FPS > 0) TARGET_FPS else 60;
+    const is_good = fps >= @max(20, target_for_color - 4);
+    const is_warn = fps >= @max(15, @divTrunc(target_for_color, 2));
 
     rl.drawRectangleRounded(
         rl.Rectangle.init(@floatFromInt(actual_fps_x), 10.0, @floatFromInt(actual_fps_w), 26.0),
@@ -2444,14 +2484,14 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         0.3,
         6,
         1.2,
-        if (fps >= 60) rl.Color.init(70, 215, 115, 200) else if (fps >= 30) rl.Color.init(245, 195, 65, 200) else rl.Color.init(245, 80, 80, 200),
+        if (is_good) rl.Color.init(70, 215, 115, 200) else if (is_warn) rl.Color.init(245, 195, 65, 200) else rl.Color.init(245, 80, 80, 200),
     );
     rl.drawText(
         fps_text,
         actual_fps_x + @divTrunc(actual_fps_w - fps_tw, 2),
         16,
         13,
-        if (fps >= 60) rl.Color.init(100, 235, 140, 255) else if (fps >= 30) rl.Color.init(255, 215, 80, 255) else rl.Color.init(255, 100, 100, 255),
+        if (is_good) rl.Color.init(100, 235, 140, 255) else if (is_warn) rl.Color.init(255, 215, 80, 255) else rl.Color.init(255, 100, 100, 255),
     );
 
     // ------------------------------------------------------------------------
