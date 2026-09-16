@@ -12,14 +12,14 @@ const rg = @import("raygui");
 /// Total population starting in the city
 pub var STARTING_POPULATION: i32 = 80;
 
-// --- Generator (Power Plant) Settings ---
-/// Radius around the generator where heat keeps citizens warm (in world units)
+// --- Heat Generator Settings ---
+/// Radius around the heat generator where heat keeps citizens warm (in world units)
 pub var GENERATOR_HEAT_RADIUS: f32 = 12.0;
-/// Whether the generator starts in the active/turned-on state
+/// Whether the heat generator starts in the active/turned-on state
 pub var GENERATOR_STARTS_ACTIVE: bool = false;
-/// Coal consumed per second while the generator is active
+/// Coal consumed per second while the heat generator is active
 pub var GENERATOR_COAL_DRAIN_PER_SEC: f32 = 0.5;
-/// Generator requires coal fuel to operate. When fuel reaches 0, it shuts down.
+/// Heat generator requires coal fuel to operate. When fuel reaches 0, it shuts down.
 pub var GENERATOR_REQUIRES_COAL: bool = true;
 
 // --- Initial Resource Stockpiles ---
@@ -184,6 +184,8 @@ var smoke_spawn_timer: f32 = 0.0;
 
 var selected_resource: ?Resource = null;
 var hovered_resource: ?Resource = null;
+var selected_generator: bool = false;
+var hovered_generator: bool = false;
 
 var is_paused: bool = false;
 var should_quit: bool = false;
@@ -248,6 +250,10 @@ fn initGame() void {
     stockpiles[@intFromEnum(Resource.food)] = INITIAL_FOOD_STOCKPILE;
 
     workers_assigned = .{ 0, 0, 0, 0 };
+    selected_resource = null;
+    hovered_resource = null;
+    selected_generator = false;
+    hovered_generator = false;
 
     total_citizens = @intCast(@min(STARTING_POPULATION, 256));
     for (0..total_citizens) |i| {
@@ -412,6 +418,43 @@ fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, camera: rl.Camera3D
     return false;
 }
 
+fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, camera: rl.Camera3D, ray: rl.Ray) bool {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+
+    // 1. Hovering near the 2D screen projection of the Heat Generator base (height ~2.0)
+    const gen_base_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 2.0, .z = 0.0 }, camera);
+    if (gen_base_screen.x >= -100 and gen_base_screen.x <= sw + 100 and
+        gen_base_screen.y >= -100 and gen_base_screen.y <= sh + 100)
+    {
+        if (rl.Vector2.distance(mouse_pos, gen_base_screen) < 70.0) {
+            return true;
+        }
+    }
+
+    // 2. Hovering the floating badge of the Heat Generator (height ~12.0)
+    const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
+    const label_w: f32 = 190.0;
+    const label_h: f32 = 28.0;
+    const label_rect = rl.Rectangle.init(
+        gen_label_screen.x - label_w / 2.0,
+        gen_label_screen.y - label_h / 2.0,
+        label_w,
+        label_h,
+    );
+    if (rl.checkCollisionPointRec(mouse_pos, label_rect)) {
+        return true;
+    }
+
+    // 3. 3D Ray Collision with generous sphere
+    const gen_hit = rl.getRayCollisionSphere(ray, .{ .x = 0.0, .y = 4.0, .z = 0.0 }, 5.8);
+    if (gen_hit.hit) {
+        return true;
+    }
+
+    return false;
+}
+
 // ============================================================================
 // MAIN APPLICATION
 // ============================================================================
@@ -526,8 +569,15 @@ pub fn main() !void {
             const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
             const in_top_bar = mouse_pos.y < 48.0;
-            const in_right_panel = mouse_pos.x > sw_f - 280.0 and mouse_pos.y > 48.0 and mouse_pos.y < 265.0;
             const in_bottom_bar = mouse_pos.y > sh_f - 32.0;
+
+            const gen_dialog_w: f32 = 270.0;
+            const gen_dialog_h: f32 = 220.0;
+            const gen_dialog_x: f32 = sw_f - gen_dialog_w - 16.0;
+            const gen_dialog_y: f32 = 46.0 + 14.0;
+            const in_generator_dialog = selected_generator and
+                mouse_pos.x >= gen_dialog_x and mouse_pos.x <= gen_dialog_x + gen_dialog_w and
+                mouse_pos.y >= gen_dialog_y and mouse_pos.y <= gen_dialog_y + gen_dialog_h;
 
             // Check if mouse is inside the on-pile management card of the active pile
             var in_active_card: bool = false;
@@ -542,21 +592,32 @@ pub fn main() !void {
 
             const ray = rl.getScreenToWorldRay(mouse_pos, camera);
 
-            // Detect hover over resource piles
+            // Detect hover over resource piles & Heat Generator
             hovered_resource = null;
-            if (!in_top_bar and !in_right_panel and !in_bottom_bar and !in_active_card) {
+            hovered_generator = false;
+            if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
                 inline for (std.meta.tags(Resource)) |r| {
                     if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
                         hovered_resource = r;
                     }
                 }
+                if (isMouseOverGeneratorTarget(mouse_pos, camera, ray)) {
+                    hovered_generator = true;
+                }
             }
 
-            // Handle Left Mouse Click (Pile Selection & Generator Interaction)
+            // Set cursor style
+            if (hovered_resource != null or hovered_generator) {
+                rl.setMouseCursor(.pointing_hand);
+            } else {
+                rl.setMouseCursor(.default);
+            }
+
+            // Handle Left Mouse Click (Pile Selection & Heat Generator Selection)
             if (rl.isMouseButtonPressed(.left)) {
-                // If clicked inside the active card, top bar, right panel, or bottom bar:
+                // If clicked inside an active dialog/card, top bar, or bottom bar:
                 // Let the respective UI controls handle the click - do NOT alter selection!
-                if (!in_top_bar and !in_right_panel and !in_bottom_bar and !in_active_card) {
+                if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
                     var clicked_pile: ?Resource = null;
                     inline for (std.meta.tags(Resource)) |r| {
                         if (isMouseOverPileTarget(r, mouse_pos, camera, ray)) {
@@ -566,20 +627,14 @@ pub fn main() !void {
 
                     if (clicked_pile) |p| {
                         selected_resource = p;
+                        selected_generator = false;
+                    } else if (isMouseOverGeneratorTarget(mouse_pos, camera, ray)) {
+                        selected_generator = true;
+                        selected_resource = null;
                     } else {
-                        // Check if generator clicked in 3D or its floating label
-                        const gen_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 3.5, .z = 0.0 }, camera);
-                        const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
-                        const dist_gen = rl.Vector2.distance(mouse_pos, gen_screen);
-                        const dist_gen_label = rl.Vector2.distance(mouse_pos, gen_label_screen);
-                        const gen_hit = rl.getRayCollisionSphere(ray, .{ .x = 0, .y = 3.5, .z = 0 }, 5.5);
-
-                        if (dist_gen < 65.0 or dist_gen_label < 60.0 or gen_hit.hit) {
-                            tryToggleGenerator();
-                        } else {
-                            // Clicked empty ground: deselect pile
-                            selected_resource = null;
-                        }
+                        // Clicked empty ground: deselect both
+                        selected_resource = null;
+                        selected_generator = false;
                     }
                 }
             }
@@ -725,8 +780,8 @@ pub fn main() !void {
             rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS * 0.5, GENERATOR_HEAT_RADIUS * 0.5, 0.04, 48, rl.Color.init(255, 175, 60, 110));
         }
 
-        // Draw The Power Plant (Generator) at (0, 0, 0)
-        drawPowerPlant(generator_active);
+        // Draw The Heat Generator at (0, 0, 0)
+        drawHeatGenerator(generator_active, selected_generator, hovered_generator);
 
         // Draw Smoke / Steam Particles
         for (smoke_particles) |p| {
@@ -784,8 +839,17 @@ pub fn main() !void {
 // 3D DRAWING FUNCTIONS
 // ============================================================================
 
-fn drawPowerPlant(active: bool) void {
+fn drawHeatGenerator(active: bool, selected: bool, hovered: bool) void {
     const vent_color = if (active) COLOR_GENERATOR_LIT else COLOR_GENERATOR_UNLIT;
+
+    // Selection & hover visual ground indicators
+    if (selected) {
+        rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(255, 180, 50, 45));
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.15, 48, rl.Color.gold);
+    } else if (hovered) {
+        rl.drawCircle3D(.{ .x = 0, .y = 0.04, .z = 0 }, 8.4, .{ .x = 1, .y = 0, .z = 0 }, 90.0, rl.Color.init(180, 220, 255, 35));
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, 8.4, 8.4, 0.08, 48, rl.Color.init(180, 220, 255, 180));
+    }
 
     // Base Tier 1: Wide base block
     rl.drawCube(.{ .x = 0, .y = 0.5, .z = 0 }, 7.4, 1.0, 7.4, COLOR_GENERATOR_BASE);
@@ -925,17 +989,37 @@ fn drawWorldLabels(camera: rl.Camera3D) void {
     const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
     const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
-    // 1. Generator floating label
+    // 1. Heat Generator floating label
     const gen_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
     if (gen_screen.x > 30 and gen_screen.x < sw - 30 and gen_screen.y > 45 and gen_screen.y < sh - 35) {
-        const text = if (generator_active) "POWER PLANT [ONLINE]" else "POWER PLANT [OFFLINE]";
+        const text = if (generator_active) "HEAT GENERATOR [ONLINE]" else "HEAT GENERATOR [OFFLINE]";
         const tw = rl.measureText(text, 11);
         const bx = @as(i32, @intFromFloat(gen_screen.x)) - @divTrunc(tw, 2);
         const by = @as(i32, @intFromFloat(gen_screen.y));
 
-        rl.drawRectangle(bx - 6, by - 3, tw + 12, 18, rl.Color.init(18, 22, 28, 215));
-        rl.drawRectangleLines(bx - 6, by - 3, tw + 12, 18, if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(70, 75, 85, 255));
-        rl.drawText(text, bx, by, 11, if (generator_active) rl.Color.init(255, 205, 60, 255) else rl.Color.init(180, 185, 195, 255));
+        const border_color = if (selected_generator)
+            rl.Color.gold
+        else if (hovered_generator)
+            rl.Color.init(255, 215, 80, 255)
+        else if (generator_active)
+            COLOR_GENERATOR_LIT
+        else
+            rl.Color.init(70, 75, 85, 255);
+
+        const bg_color = if (selected_generator or hovered_generator)
+            rl.Color.init(32, 40, 52, 245)
+        else
+            rl.Color.init(18, 22, 28, 220);
+
+        rl.drawRectangle(bx - 8, by - 4, tw + 16, 20, bg_color);
+        rl.drawRectangleLines(bx - 8, by - 4, tw + 16, 20, border_color);
+        rl.drawText(
+            text,
+            bx,
+            by,
+            11,
+            if (selected_generator) rl.Color.gold else if (generator_active) rl.Color.init(255, 205, 60, 255) else rl.Color.init(180, 185, 195, 255),
+        );
     }
 
     // 2. Resource Piles floating badges & On-Pile Worker Assignment Stations
@@ -1210,7 +1294,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
         const banner_h: f32 = 26.0;
         const banner_y: f32 = top_bar_height;
         rl.drawRectangle(0, @intFromFloat(banner_y), screen_w, @intFromFloat(banner_h), rl.Color.init(190, 30, 30, 235));
-        const warn_msg = "WARNING: Insufficient Coal! The Generator needs coal to operate. Click the Coal Pile to assign workers.";
+        const warn_msg = "WARNING: Insufficient Coal! The Heat Generator needs coal to operate. Click the Coal Pile to assign workers.";
         const tw = rl.measureText(warn_msg, 13);
         rl.drawText(
             warn_msg,
@@ -1222,11 +1306,11 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     }
 
     // ------------------------------------------------------------------------
-    // IN-WORLD WORKER MANAGEMENT TIP (When no pile is selected)
+    // IN-WORLD INTERACTION TIP (When nothing is selected)
     // ------------------------------------------------------------------------
-    if (selected_resource == null) {
+    if (selected_resource == null and !selected_generator) {
         rl.drawText(
-            "TIP: Click any resource pile in the map to assign or remove workers directly on site",
+            "TIP: Click any resource pile to assign workers, or click the Heat Generator to open its control dialog",
             18,
             @intFromFloat(@as(f32, @floatFromInt(screen_h)) - 55.0),
             13,
@@ -1235,110 +1319,125 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     }
 
     // ------------------------------------------------------------------------
-    // RIGHT PANEL: POWER PLANT (GENERATOR) CONTROL & COAL STATUS
+    // HEAT GENERATOR DIALOG (Appears ONLY when the Heat Generator is selected)
     // ------------------------------------------------------------------------
-    const gen_panel_w: f32 = 260.0;
-    const gen_panel_h: f32 = 200.0;
-    const gen_panel_x: f32 = @as(f32, @floatFromInt(screen_w)) - gen_panel_w - 16.0;
-    const gen_panel_y: f32 = top_bar_height + 14.0;
+    if (selected_generator) {
+        const gen_panel_w: f32 = 270.0;
+        const gen_panel_h: f32 = 215.0;
+        const gen_panel_x: f32 = @as(f32, @floatFromInt(screen_w)) - gen_panel_w - 16.0;
+        const gen_panel_y: f32 = top_bar_height + 14.0;
 
-    rl.drawRectangleRounded(
-        rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
-        0.04,
-        8,
-        rl.Color.init(22, 26, 32, 230),
-    );
-    rl.drawRectangleRoundedLinesEx(
-        rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
-        0.04,
-        8,
-        1.5,
-        if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(55, 65, 78, 255),
-    );
+        rl.drawRectangleRounded(
+            rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
+            0.04,
+            8,
+            rl.Color.init(20, 24, 32, 245),
+        );
+        rl.drawRectangleRoundedLinesEx(
+            rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
+            0.04,
+            8,
+            2.0,
+            if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(245, 195, 65, 255),
+        );
 
-    // Generator Header
-    rl.drawText("THE POWER PLANT", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 12), 16, rl.Color.init(240, 245, 250, 255));
+        // Header: Orange heat icon + Title
+        rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 12), 12, 14, COLOR_GENERATOR_LIT);
+        rl.drawText("THE HEAT GENERATOR", @intFromFloat(gen_panel_x + 32), @intFromFloat(gen_panel_y + 10), 16, rl.Color.init(245, 205, 70, 255));
 
-    // Status Indicator
-    if (generator_active) {
-        rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 34), 10, 10, COLOR_GENERATOR_LIT);
-        rl.drawText("ONLINE - HEATING ACTIVE", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 32), 13, COLOR_GENERATOR_LIT);
-    } else {
-        rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 34), 10, 10, rl.Color.init(120, 125, 135, 255));
-        rl.drawText("OFFLINE - COLD", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 32), 13, rl.Color.init(150, 160, 170, 255));
-    }
+        // Close button [X]
+        if (!is_paused) {
+            if (rg.button(rl.Rectangle.init(gen_panel_x + gen_panel_w - 28, gen_panel_y + 8, 20, 20), "x")) {
+                selected_generator = false;
+            }
+        }
 
-    // Toggle Button
-    const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
-    const btn_label = if (generator_active)
-        "TURN GENERATOR OFF"
-    else if (coal_amount > 0.0)
-        "TURN GENERATOR ON"
-    else
-        "IGNITE (NO COAL!)";
+        // Subtitle
+        rl.drawText("Central Thermal Facility", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
-    if (rg.button(rl.Rectangle.init(gen_panel_x + 14, gen_panel_y + 56, gen_panel_w - 28, 36), btn_label)) {
-        tryToggleGenerator();
-    }
+        // Status Indicator
+        if (generator_active) {
+            rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, COLOR_GENERATOR_LIT);
+            rl.drawText("ONLINE - HEATING ACTIVE", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, COLOR_GENERATOR_LIT);
+        } else {
+            rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, rl.Color.init(120, 125, 135, 255));
+            rl.drawText("OFFLINE - COLD", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, rl.Color.init(150, 160, 170, 255));
+        }
 
-    // Generator details
-    _ = rl.drawText(
-        fmt("Heat Radius: {d:.1} m", .{GENERATOR_HEAT_RADIUS}),
-        @intFromFloat(gen_panel_x + 14),
-        @intFromFloat(gen_panel_y + 102),
-        13,
-        rl.Color.init(210, 215, 225, 255),
-    );
+        // Toggle Button
+        const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
+        const btn_label = if (generator_active)
+            "TURN HEAT GENERATOR OFF"
+        else if (coal_amount > 0.0)
+            "TURN HEAT GENERATOR ON"
+        else
+            "IGNITE (NO COAL!)";
 
-    _ = rl.drawText(
-        fmt("Citizens Protected: {d} / {d}", .{ warm_count, total_citizens }),
-        @intFromFloat(gen_panel_x + 14),
-        @intFromFloat(gen_panel_y + 122),
-        13,
-        if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
-    );
+        if (!is_paused) {
+            if (rg.button(rl.Rectangle.init(gen_panel_x + 14, gen_panel_y + 68, gen_panel_w - 28, 36), btn_label)) {
+                tryToggleGenerator();
+            }
+        }
 
-    // Coal fuel status and burn time
-    _ = rl.drawText(
-        fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
-        @intFromFloat(gen_panel_x + 14),
-        @intFromFloat(gen_panel_y + 142),
-        13,
-        if (coal_amount > 10.0) rl.Color.white else rl.Color.init(255, 120, 100, 255),
-    );
+        // Generator details
+        _ = rl.drawText(
+            fmt("Heat Radius: {d:.1} m", .{GENERATOR_HEAT_RADIUS}),
+            @intFromFloat(gen_panel_x + 14),
+            @intFromFloat(gen_panel_y + 114),
+            13,
+            rl.Color.init(210, 215, 225, 255),
+        );
 
-    if (generator_active) {
-        const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
-        const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
-        if (net_coal < -0.01) {
-            const secs_left = @max(0.0, coal_amount / (-net_coal));
-            const total_s = @as(i32, @intFromFloat(secs_left));
-            const mins = @divTrunc(total_s, 60);
-            const secs = @rem(total_s, 60);
-            _ = rl.drawText(
-                fmt("Fuel Depletes In: ~{d}m {d:0>2}s", .{ mins, secs }),
-                @intFromFloat(gen_panel_x + 14),
-                @intFromFloat(gen_panel_y + 162),
-                12,
-                rl.Color.init(255, 175, 70, 255),
-            );
+        _ = rl.drawText(
+            fmt("Citizens Protected: {d} / {d}", .{ warm_count, total_citizens }),
+            @intFromFloat(gen_panel_x + 14),
+            @intFromFloat(gen_panel_y + 134),
+            13,
+            if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
+        );
+
+        // Coal fuel status and burn time
+        _ = rl.drawText(
+            fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
+            @intFromFloat(gen_panel_x + 14),
+            @intFromFloat(gen_panel_y + 154),
+            13,
+            if (coal_amount > 10.0) rl.Color.white else rl.Color.init(255, 120, 100, 255),
+        );
+
+        if (generator_active) {
+            const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
+            const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
+            if (net_coal < -0.01) {
+                const secs_left = @max(0.0, coal_amount / (-net_coal));
+                const total_s = @as(i32, @intFromFloat(secs_left));
+                const mins = @divTrunc(total_s, 60);
+                const secs = @rem(total_s, 60);
+                _ = rl.drawText(
+                    fmt("Fuel Depletes In: ~{d}m {d:0>2}s", .{ mins, secs }),
+                    @intFromFloat(gen_panel_x + 14),
+                    @intFromFloat(gen_panel_y + 174),
+                    12,
+                    rl.Color.init(255, 175, 70, 255),
+                );
+            } else {
+                _ = rl.drawText(
+                    "Fuel Sustainable (Surplus)",
+                    @intFromFloat(gen_panel_x + 14),
+                    @intFromFloat(gen_panel_y + 174),
+                    12,
+                    rl.Color.init(120, 230, 140, 255),
+                );
+            }
         } else {
             _ = rl.drawText(
-                "Fuel Sustainable (Surplus)",
+                fmt("Burn Rate: {d:.1} coal/sec", .{GENERATOR_COAL_DRAIN_PER_SEC}),
                 @intFromFloat(gen_panel_x + 14),
-                @intFromFloat(gen_panel_y + 162),
+                @intFromFloat(gen_panel_y + 174),
                 12,
-                rl.Color.init(120, 230, 140, 255),
+                rl.Color.init(150, 170, 190, 255),
             );
         }
-    } else {
-        _ = rl.drawText(
-            fmt("Burn Rate: {d:.1} coal/sec", .{GENERATOR_COAL_DRAIN_PER_SEC}),
-            @intFromFloat(gen_panel_x + 14),
-            @intFromFloat(gen_panel_y + 162),
-            12,
-            rl.Color.init(150, 170, 190, 255),
-        );
     }
 
     // ------------------------------------------------------------------------
@@ -1349,7 +1448,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     rl.drawRectangle(0, @intFromFloat(bot_y), screen_w, @intFromFloat(bot_h), rl.Color.init(18, 22, 28, 220));
 
     rl.drawText(
-        "CONTROLS: [Click Pile] Manage Workers On-Site (+/-)  |  [W/A/S/D / Arrows / RMB Drag] Pan  |  [Wheel] Zoom  |  [Space / P] Toggle Plant  |  [ESC] Pause Menu",
+        "CONTROLS: [Click Heat Generator] Open Controls  |  [Click Pile] Manage Workers On-Site  |  [W/A/S/D / Arrows / RMB Drag] Pan  |  [Wheel] Zoom  |  [ESC] Pause Menu",
         18,
         @intFromFloat(bot_y + 8),
         13,
