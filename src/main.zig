@@ -58,6 +58,12 @@ pub var CAMERA_MAX_DISTANCE: f32 = 80.0;
 pub var CAMERA_DEFAULT_POSITION: rl.Vector3 = .{ .x = 0.0, .y = 35.0, .z = 29.0 };
 pub var CAMERA_DEFAULT_TARGET: rl.Vector3 = .{ .x = 0.0, .y = 0.0, .z = -1.0 };
 
+// --- Performance & Frame Rate Settings ---
+/// Target frame rate (0 = uncapped / unlimited frame rate)
+pub var TARGET_FPS: i32 = 0;
+/// Whether to enable VSync (false for uncapped frame rate)
+pub var ENABLE_VSYNC: bool = false;
+
 // --- In-World Interaction & Screen Hit Settings ---
 /// Screen-space pixel hit radius around pile base to register clicks and hovers
 pub var PILE_SCREEN_HIT_RADIUS_PX: f32 = 65.0;
@@ -461,7 +467,7 @@ fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, camera: rl.Camera3D, ray: r
 
 pub fn main() !void {
     rl.setConfigFlags(.{
-        .vsync_hint = true,
+        .vsync_hint = ENABLE_VSYNC,
         .window_highdpi = true,
         .window_resizable = true,
     });
@@ -472,7 +478,10 @@ pub fn main() !void {
     // Disable default ESC behavior so we can use it for our Pause Menu
     rl.setExitKey(.null);
 
-    rl.setTargetFPS(60);
+    // Set target FPS if capped; otherwise leaving it unset allows uncapped frame rates
+    if (TARGET_FPS > 0) {
+        rl.setTargetFPS(TARGET_FPS);
+    }
 
     initGame();
 
@@ -1209,10 +1218,13 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
 
     // Resource Stockpiles & Gathering Rates (Dynamically spaced)
     const res_start_x: i32 = 205;
-    const pop_box_w: i32 = 280;
-    const pop_box_x: i32 = screen_w - pop_box_w;
+    const fps_badge_w: i32 = 76;
+    const fps_box_x: i32 = screen_w - fps_badge_w - 12;
 
-    const available_res_w: i32 = @max(340, pop_box_x - res_start_x - 20);
+    const pop_box_w: i32 = 265;
+    const pop_box_x: i32 = fps_box_x - pop_box_w - 14;
+
+    const available_res_w: i32 = @max(340, pop_box_x - res_start_x - 16);
     const col_w: i32 = @min(105, @divTrunc(available_res_w, 4));
 
     var cur_x: i32 = res_start_x;
@@ -1260,10 +1272,10 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
         cur_x += col_w;
     }
 
-    // Population & Warmth Overview (Top-Right, right-aligned)
+    // Population & Warmth Overview (Top-Right, before FPS counter)
     _ = rl.drawText(
         fmt("Pop: {d}", .{total_citizens}),
-        pop_box_x + 10,
+        pop_box_x + 8,
         14,
         15,
         rl.Color.init(240, 245, 250, 255),
@@ -1272,7 +1284,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     // Warm tag
     _ = rl.drawText(
         fmt("Warm: {d}", .{warm_count}),
-        pop_box_x + 95,
+        pop_box_x + 88,
         14,
         15,
         COLOR_CITIZEN_WARM,
@@ -1281,10 +1293,38 @@ fn drawHUD(warm_count: i32, cold_count: i32, camera: rl.Camera3D) void {
     // Cold tag
     _ = rl.drawText(
         fmt("Cold: {d}", .{cold_count}),
-        pop_box_x + 185,
+        pop_box_x + 175,
         14,
         15,
         rl.Color.init(110, 185, 255, 255),
+    );
+
+    // FPS Display at the top-right corner of the screen
+    const fps = rl.getFPS();
+    const fps_text = fmt("{d} FPS", .{fps});
+    const fps_tw = rl.measureText(fps_text, 13);
+    const actual_fps_w: i32 = @max(fps_badge_w, fps_tw + 18);
+    const actual_fps_x: i32 = screen_w - actual_fps_w - 12;
+
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(@floatFromInt(actual_fps_x), 10.0, @floatFromInt(actual_fps_w), 26.0),
+        0.3,
+        6,
+        rl.Color.init(12, 16, 22, 230),
+    );
+    rl.drawRectangleRoundedLinesEx(
+        rl.Rectangle.init(@floatFromInt(actual_fps_x), 10.0, @floatFromInt(actual_fps_w), 26.0),
+        0.3,
+        6,
+        1.2,
+        if (fps >= 60) rl.Color.init(70, 215, 115, 200) else if (fps >= 30) rl.Color.init(245, 195, 65, 200) else rl.Color.init(245, 80, 80, 200),
+    );
+    rl.drawText(
+        fps_text,
+        actual_fps_x + @divTrunc(actual_fps_w - fps_tw, 2),
+        16,
+        13,
+        if (fps >= 60) rl.Color.init(100, 235, 140, 255) else if (fps >= 30) rl.Color.init(255, 215, 80, 255) else rl.Color.init(255, 100, 100, 255),
     );
 
     // ------------------------------------------------------------------------
