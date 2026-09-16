@@ -70,6 +70,24 @@ pub var PILE_SCREEN_HIT_RADIUS_PX: f32 = 65.0;
 /// In-world vertical height offset where the floating badge/card is anchored above the pile
 pub var PILE_LABEL_HEIGHT_OFFSET: f32 = 3.8;
 
+// --- Building & Construction Settings ---
+/// Wood cost required to construct one House
+pub var HOUSE_WOOD_COST: f32 = 20.0;
+/// Total citizens sheltered by a completed House
+pub var HOUSE_CAPACITY: i32 = 10;
+/// Base construction duration in seconds when built by maximum workers
+pub var HOUSE_BASE_BUILD_TIME: f32 = 20.0;
+/// Maximum number of idle workers that can simultaneously construct a single House
+pub var HOUSE_MAX_BUILDERS: i32 = 10;
+/// Clearance collision radius around a House in world units
+pub var HOUSE_COLLISION_RADIUS: f32 = 3.6;
+/// Clearance collision radius around the central Heat Generator
+pub var GENERATOR_COLLISION_RADIUS: f32 = 5.2;
+/// Clearance collision radius around resource piles
+pub var RESOURCE_PILE_COLLISION_RADIUS: f32 = 4.8;
+/// Maximum number of placed buildings in the settlement
+pub const MAX_BUILDINGS: usize = 128;
+
 // --- Visual Color Palette ---
 pub var COLOR_SNOW_GROUND: rl.Color = rl.Color.init(236, 241, 246, 255); // Snowy white landscape
 pub var COLOR_SNOW_RINGS: rl.Color = rl.Color.init(205, 218, 230, 255); // City district ring lines
@@ -84,6 +102,12 @@ pub var COLOR_STEEL_PILE: rl.Color = rl.Color.init(145, 168, 190, 255); // Metal
 pub var COLOR_FOOD_PILE: rl.Color = rl.Color.init(195, 60, 48, 255); // Red supply crates
 pub var COLOR_CITIZEN_WARM: rl.Color = rl.Color.init(230, 140, 35, 255); // Warm citizen coat
 pub var COLOR_CITIZEN_COLD: rl.Color = rl.Color.init(65, 115, 180, 255); // Frostbitten citizen coat
+pub var COLOR_HOUSE_WALLS: rl.Color = rl.Color.init(104, 76, 52, 255); // Timber brown wood walls
+pub var COLOR_HOUSE_ROOF: rl.Color = rl.Color.init(54, 64, 75, 255); // Dark slate roof
+pub var COLOR_HOUSE_CHIMNEY: rl.Color = rl.Color.init(45, 38, 34, 255); // Brick chimney
+pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
+pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
+pub var COLOR_GHOST_INVALID: rl.Color = rl.Color.init(235, 60, 60, 150); // Translucent red preview
 
 // ============================================================================
 // DATA STRUCTURES
@@ -157,6 +181,70 @@ pub const CitizenRole = enum {
             .food => .gathering_food,
         };
     }
+};
+
+pub const BuildingType = enum(usize) {
+    house = 0,
+
+    pub fn name(self: BuildingType) [:0]const u8 {
+        return switch (self) {
+            .house => "House",
+        };
+    }
+
+    pub fn woodCost(self: BuildingType) f32 {
+        return switch (self) {
+            .house => HOUSE_WOOD_COST,
+        };
+    }
+
+    pub fn capacity(self: BuildingType) i32 {
+        return switch (self) {
+            .house => HOUSE_CAPACITY,
+        };
+    }
+
+    pub fn maxBuilders(self: BuildingType) i32 {
+        return switch (self) {
+            .house => HOUSE_MAX_BUILDERS,
+        };
+    }
+
+    pub fn baseBuildTime(self: BuildingType) f32 {
+        return switch (self) {
+            .house => HOUSE_BASE_BUILD_TIME,
+        };
+    }
+
+    pub fn collisionRadius(self: BuildingType) f32 {
+        return switch (self) {
+            .house => HOUSE_COLLISION_RADIUS,
+        };
+    }
+};
+
+pub const BuildingState = enum {
+    constructing,
+    completed,
+};
+
+pub const Building = struct {
+    id: usize,
+    btype: BuildingType,
+    pos: rl.Vector3,
+    state: BuildingState,
+    progress: f32, // 0.0 to 1.0
+    active_builders: i32,
+    is_warm: bool,
+};
+
+pub const BuildTab = enum {
+    people,
+};
+
+pub const PlacementCheck = struct {
+    valid: bool,
+    reason: [:0]const u8,
 };
 
 pub const MAX_CITIZENS: usize = 1024;
@@ -472,6 +560,14 @@ var hovered_resource: ?Resource = null;
 var selected_generator: bool = false;
 var hovered_generator: bool = false;
 
+var buildings: [MAX_BUILDINGS]Building = undefined;
+var buildings_count: usize = 0;
+var build_menu_open: bool = false;
+var active_build_tab: BuildTab = .people;
+var placing_building: ?BuildingType = null;
+var selected_building: ?usize = null;
+var hovered_building: ?usize = null;
+
 var is_paused: bool = false;
 var should_quit: bool = false;
 var fuel_warning_timer: f32 = 0.0;
@@ -501,6 +597,61 @@ fn getIdleCitizensCount() i32 {
     return @intCast(citizen_mgr.getIdleCount());
 }
 
+fn getMouseGroundIntersection(ray: rl.Ray) ?rl.Vector3 {
+    if (@abs(ray.direction.y) < 0.0001) return null;
+    const t = -ray.position.y / ray.direction.y;
+    if (t < 0.0) return null;
+    return rl.Vector3{
+        .x = ray.position.x + t * ray.direction.x,
+        .y = 0.0,
+        .z = ray.position.z + t * ray.direction.z,
+    };
+}
+
+fn canPlaceBuildingAt(pos: rl.Vector3, btype: BuildingType) PlacementCheck {
+    const col_radius = btype.collisionRadius();
+
+    // 1. Distance to Heat Generator at (0, 0, 0)
+    const dist_gen_sq = pos.x * pos.x + pos.z * pos.z;
+    const min_gen_dist = GENERATOR_COLLISION_RADIUS + col_radius;
+    if (dist_gen_sq < min_gen_dist * min_gen_dist) {
+        return .{ .valid = false, .reason = "Too close to Heat Generator" };
+    }
+
+    // 2. Distance to Resource Piles
+    inline for (std.meta.tags(Resource)) |r| {
+        const ppos = r.position();
+        const dx = pos.x - ppos.x;
+        const dz = pos.z - ppos.z;
+        const min_pile_dist = RESOURCE_PILE_COLLISION_RADIUS + col_radius;
+        if (dx * dx + dz * dz < min_pile_dist * min_pile_dist) {
+            return .{ .valid = false, .reason = "Collides with resource pile" };
+        }
+    }
+
+    // 3. Distance to existing buildings
+    for (buildings[0..buildings_count]) |b| {
+        const dx = pos.x - b.pos.x;
+        const dz = pos.z - b.pos.z;
+        const min_b_dist = b.btype.collisionRadius() + col_radius;
+        if (dx * dx + dz * dz < min_b_dist * min_b_dist) {
+            return .{ .valid = false, .reason = "Collides with existing building" };
+        }
+    }
+
+    // 4. City boundary check (e.g. radius <= 85.0)
+    if (dist_gen_sq > 85.0 * 85.0) {
+        return .{ .valid = false, .reason = "Beyond city boundary" };
+    }
+
+    // 5. Wood cost check
+    if (stockpiles[@intFromEnum(Resource.wood)] < btype.woodCost()) {
+        return .{ .valid = false, .reason = "Insufficient Wood" };
+    }
+
+    return .{ .valid = true, .reason = "Click to Place" };
+}
+
 fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
     if (role.toResource()) |res| {
         const center = res.position();
@@ -512,7 +663,23 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
             .z = center.z + @sin(angle) * dist,
         };
     } else {
-        // Idle: wander around the central generator
+        // Idle citizens: If there is an active construction site with active builders,
+        // wander around that construction site to visually assist!
+        for (buildings[0..buildings_count]) |b| {
+            if (b.state == .constructing and b.active_builders > 0) {
+                if (randomFloat(0.0, 1.0) < 0.65) {
+                    const angle = randomFloat(0.0, std.math.pi * 2.0);
+                    const dist = randomFloat(1.6, 3.2);
+                    return .{
+                        .x = b.pos.x + @cos(angle) * dist,
+                        .y = 0.0,
+                        .z = b.pos.z + @sin(angle) * dist,
+                    };
+                }
+            }
+        }
+
+        // Otherwise wander around the central generator
         const angle = randomFloat(0.0, std.math.pi * 2.0);
         const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
         return .{
@@ -535,6 +702,13 @@ fn initGame() void {
     hovered_resource = null;
     selected_generator = false;
     hovered_generator = false;
+
+    buildings_count = 0;
+    build_menu_open = false;
+    active_build_tab = .people;
+    placing_building = null;
+    selected_building = null;
+    hovered_building = null;
 
     citizen_mgr.init(@intCast(@min(STARTING_POPULATION, MAX_CITIZENS)));
     total_citizens = citizen_mgr.count;
@@ -738,16 +912,49 @@ pub fn main() !void {
         const dt = rl.getFrameTime();
 
         // --------------------------------------------------------------------
-        // PAUSE MENU TOGGLE (ESC Key)
+        // PAUSE MENU / ESC Key handling
         // --------------------------------------------------------------------
         if (rl.isKeyPressed(.escape)) {
-            is_paused = !is_paused;
+            if (placing_building != null) {
+                placing_building = null;
+            } else if (build_menu_open) {
+                build_menu_open = false;
+            } else if (selected_resource != null or selected_generator or selected_building != null) {
+                selected_resource = null;
+                selected_generator = false;
+                selected_building = null;
+            } else {
+                is_paused = !is_paused;
+            }
         }
 
         // --------------------------------------------------------------------
         // GAMEPLAY INPUT & SIMULATION (Only when NOT paused)
         // --------------------------------------------------------------------
+        var ground_hit: ?rl.Vector3 = null;
+        var placement_check = PlacementCheck{ .valid = false, .reason = "" };
+        const mouse_pos = rl.getMousePosition();
+
         if (!is_paused) {
+            // Build Menu hotkey 'B'
+            if (rl.isKeyPressed(.b)) {
+                if (placing_building != null) {
+                    placing_building = null;
+                } else {
+                    build_menu_open = !build_menu_open;
+                    if (build_menu_open) {
+                        selected_resource = null;
+                        selected_generator = false;
+                        selected_building = null;
+                    }
+                }
+            }
+
+            // Right-click cancels building placement
+            if (placing_building != null and rl.isMouseButtonPressed(.right)) {
+                placing_building = null;
+            }
+
             // Toggle generator with Space or P
             if (rl.isKeyPressed(.space) or rl.isKeyPressed(.p)) {
                 tryToggleGenerator();
@@ -773,8 +980,8 @@ pub fn main() !void {
                 camera.target = camera.target.add(move_step);
             }
 
-            // Camera Drag with Right or Middle Mouse Button
-            if (rl.isMouseButtonDown(.right) or rl.isMouseButtonDown(.middle)) {
+            // Camera Drag with Right or Middle Mouse Button (only when not placing building)
+            if (placing_building == null and (rl.isMouseButtonDown(.right) or rl.isMouseButtonDown(.middle))) {
                 const mouse_delta = rl.getMouseDelta();
                 const factor = 0.06;
                 const drag_step = rl.Vector3{
@@ -813,12 +1020,22 @@ pub fn main() !void {
             }
 
             // Screen & UI interaction coordinates
-            const mouse_pos = rl.getMousePosition();
             const sw_f = @as(f32, @floatFromInt(rl.getScreenWidth()));
             const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
             const in_top_bar = mouse_pos.y < 48.0;
             const in_bottom_bar = mouse_pos.y > sh_f - 32.0;
+
+            const build_btn_w: f32 = 126.0;
+            const build_btn_h: f32 = 36.0;
+            const build_btn_x: f32 = 16.0;
+            const build_btn_y: f32 = sh_f - 30.0 - build_btn_h - 10.0;
+            const build_btn_rect = rl.Rectangle.init(build_btn_x, build_btn_y, build_btn_w, build_btn_h);
+            const in_build_btn = rl.checkCollisionPointRec(mouse_pos, build_btn_rect);
+
+            const strip_h: f32 = 148.0;
+            const strip_y: f32 = sh_f - 30.0 - strip_h;
+            const in_build_strip = build_menu_open and mouse_pos.y >= strip_y and mouse_pos.y <= (sh_f - 30.0);
 
             const gen_dialog_w: f32 = 270.0;
             const gen_dialog_h: f32 = 220.0;
@@ -827,6 +1044,14 @@ pub fn main() !void {
             const in_generator_dialog = selected_generator and
                 mouse_pos.x >= gen_dialog_x and mouse_pos.x <= gen_dialog_x + gen_dialog_w and
                 mouse_pos.y >= gen_dialog_y and mouse_pos.y <= gen_dialog_y + gen_dialog_h;
+
+            const bldg_dialog_w: f32 = 250.0;
+            const bldg_dialog_h: f32 = 180.0;
+            const bldg_dialog_x: f32 = sw_f - bldg_dialog_w - 16.0;
+            const bldg_dialog_y: f32 = 46.0 + 14.0;
+            const in_building_dialog = (selected_building != null) and
+                mouse_pos.x >= bldg_dialog_x and mouse_pos.x <= bldg_dialog_x + bldg_dialog_w and
+                mouse_pos.y >= bldg_dialog_y and mouse_pos.y <= bldg_dialog_y + bldg_dialog_h;
 
             // Precompute scene 2D projections ONCE per frame
             const cached_ui = computeCachedUI(camera, selected_resource);
@@ -841,12 +1066,22 @@ pub fn main() !void {
                 }
             }
 
-            const ray = rl.getScreenToWorldRay(mouse_pos, camera);
+            const in_ui = in_top_bar or in_bottom_bar or in_generator_dialog or in_active_card or in_build_btn or in_build_strip or in_building_dialog;
 
-            // Detect hover over resource piles & Heat Generator using cached projections
+            const ray = rl.getScreenToWorldRay(mouse_pos, camera);
+            ground_hit = getMouseGroundIntersection(ray);
+            if (placing_building) |btype| {
+                if (ground_hit) |pos| {
+                    placement_check = canPlaceBuildingAt(pos, btype);
+                }
+            }
+
+            // Detect hover over resource piles, Heat Generator & buildings
             hovered_resource = null;
             hovered_generator = false;
-            if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
+            hovered_building = null;
+
+            if (placing_building == null and !in_ui) {
                 inline for (std.meta.tags(Resource)) |r| {
                     if (isMouseOverPileTarget(r, mouse_pos, cached_ui.piles[@intFromEnum(r)], ray)) {
                         hovered_resource = r;
@@ -855,35 +1090,96 @@ pub fn main() !void {
                 if (isMouseOverGeneratorTarget(mouse_pos, cached_ui, ray)) {
                     hovered_generator = true;
                 }
+                for (buildings[0..buildings_count]) |b| {
+                    const hit = rl.getRayCollisionSphere(ray, .{ .x = b.pos.x, .y = 1.5, .z = b.pos.z }, b.btype.collisionRadius());
+                    if (hit.hit) {
+                        hovered_building = b.id;
+                    }
+                }
             }
 
             // Set cursor style
-            if (hovered_resource != null or hovered_generator) {
+            if (placing_building != null) {
+                rl.setMouseCursor(if (placement_check.valid) .crosshair else .not_allowed);
+            } else if (hovered_resource != null or hovered_generator or hovered_building != null or in_build_btn) {
                 rl.setMouseCursor(.pointing_hand);
             } else {
                 rl.setMouseCursor(.default);
             }
 
-            // Handle Left Mouse Click (Pile Selection & Heat Generator Selection)
+            // Handle Left Mouse Click
             if (rl.isMouseButtonPressed(.left)) {
-                if (!in_top_bar and !in_generator_dialog and !in_bottom_bar and !in_active_card) {
-                    var clicked_pile: ?Resource = null;
-                    inline for (std.meta.tags(Resource)) |r| {
-                        if (isMouseOverPileTarget(r, mouse_pos, cached_ui.piles[@intFromEnum(r)], ray)) {
-                            clicked_pile = r;
+                if (placing_building) |btype| {
+                    if (!in_top_bar and !in_bottom_bar) {
+                        if (ground_hit) |pos| {
+                            if (placement_check.valid) {
+                                stockpiles[@intFromEnum(Resource.wood)] -= btype.woodCost();
+                                if (buildings_count < MAX_BUILDINGS) {
+                                    buildings[buildings_count] = .{
+                                        .id = buildings_count,
+                                        .btype = btype,
+                                        .pos = pos,
+                                        .state = .constructing,
+                                        .progress = 0.0,
+                                        .active_builders = 0,
+                                        .is_warm = false,
+                                    };
+                                    buildings_count += 1;
+                                }
+                                if (!rl.isKeyDown(.left_shift) and !rl.isKeyDown(.right_shift)) {
+                                    placing_building = null;
+                                }
+                            }
                         }
                     }
+                } else {
+                    if (in_build_btn) {
+                        build_menu_open = !build_menu_open;
+                        if (build_menu_open) {
+                            selected_resource = null;
+                            selected_generator = false;
+                            selected_building = null;
+                        }
+                    } else if (in_build_strip) {
+                        // Check close button [x]
+                        const close_rect = rl.Rectangle.init(sw_f - 36.0, strip_y + 8.0, 24.0, 24.0);
+                        if (rl.checkCollisionPointRec(mouse_pos, close_rect)) {
+                            build_menu_open = false;
+                        }
+                        // Check House card
+                        const house_card_rect = rl.Rectangle.init(16.0, strip_y + 44.0, 230.0, 92.0);
+                        if (rl.checkCollisionPointRec(mouse_pos, house_card_rect)) {
+                            if (stockpiles[@intFromEnum(Resource.wood)] >= HOUSE_WOOD_COST) {
+                                placing_building = .house;
+                                build_menu_open = false;
+                            }
+                        }
+                    } else if (!in_ui) {
+                        var clicked_pile: ?Resource = null;
+                        inline for (std.meta.tags(Resource)) |r| {
+                            if (isMouseOverPileTarget(r, mouse_pos, cached_ui.piles[@intFromEnum(r)], ray)) {
+                                clicked_pile = r;
+                            }
+                        }
 
-                    if (clicked_pile) |p| {
-                        selected_resource = p;
-                        selected_generator = false;
-                    } else if (isMouseOverGeneratorTarget(mouse_pos, cached_ui, ray)) {
-                        selected_generator = true;
-                        selected_resource = null;
-                    } else {
-                        // Clicked empty ground: deselect both
-                        selected_resource = null;
-                        selected_generator = false;
+                        if (clicked_pile) |p| {
+                            selected_resource = p;
+                            selected_generator = false;
+                            selected_building = null;
+                        } else if (isMouseOverGeneratorTarget(mouse_pos, cached_ui, ray)) {
+                            selected_generator = true;
+                            selected_resource = null;
+                            selected_building = null;
+                        } else if (hovered_building) |bid| {
+                            selected_building = bid;
+                            selected_resource = null;
+                            selected_generator = false;
+                        } else {
+                            // Clicked empty ground: deselect all
+                            selected_resource = null;
+                            selected_generator = false;
+                            selected_building = null;
+                        }
                     }
                 }
             }
@@ -930,6 +1226,34 @@ pub fn main() !void {
 
             // 4. Generator smoke/steam particles (SIMD SoA)
             smoke_soa.update(dt, generator_active);
+
+            // 5. Building construction simulation (idle workers)
+            var idle_available: usize = citizen_mgr.getIdleCount();
+            for (buildings[0..buildings_count]) |*b| {
+                const dist_to_gen_sq = b.pos.x * b.pos.x + b.pos.z * b.pos.z;
+                b.is_warm = generator_active and (dist_to_gen_sq <= GENERATOR_HEAT_RADIUS * GENERATOR_HEAT_RADIUS);
+
+                if (b.state == .constructing) {
+                    const needed: usize = @intCast(b.btype.maxBuilders());
+                    const assigned = @min(idle_available, needed);
+                    b.active_builders = @intCast(assigned);
+                    idle_available -= assigned;
+
+                    if (b.active_builders > 0) {
+                        // Progress speed: 10 workers -> 1.0 (20s), 5 workers -> 0.5 (40s), 0 workers -> 0.0
+                        const speed_mult = @as(f32, @floatFromInt(b.active_builders)) / @as(f32, @floatFromInt(b.btype.maxBuilders()));
+                        const progress_delta = (speed_mult / b.btype.baseBuildTime()) * dt;
+                        b.progress += progress_delta;
+                        if (b.progress >= 1.0) {
+                            b.progress = 1.0;
+                            b.state = .completed;
+                            b.active_builders = 0;
+                        }
+                    }
+                } else {
+                    b.active_builders = 0;
+                }
+            }
         }
 
         // Cache UI for rendering HUD
@@ -950,30 +1274,25 @@ pub fn main() !void {
         // Ground Plane (Snow landscape)
         rl.drawPlane(.{ .x = 0.0, .y = -0.01, .z = 0.0 }, .{ .x = 220.0, .y = 220.0 }, COLOR_SNOW_GROUND);
 
-        // Concentric District Rings (Frostpunk circular blueprint)
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 12.0, 12.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 20.0, 20.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 30.0, 30.0, 0.01, 64, COLOR_SNOW_RINGS);
-        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 42.0, 42.0, 0.01, 64, COLOR_SNOW_RINGS);
-
         // Heat Zone on Ground (Visible when Generator is ON)
         if (generator_active) {
             rl.drawCircle3D(.{ .x = 0, .y = 0.03, .z = 0 }, GENERATOR_HEAT_RADIUS, .{ .x = 1, .y = 0, .z = 0 }, 90.0, COLOR_HEAT_ZONE);
-            rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS, GENERATOR_HEAT_RADIUS, 0.05, 64, COLOR_HEAT_ZONE_RING);
-            rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS * 0.5, GENERATOR_HEAT_RADIUS * 0.5, 0.04, 48, rl.Color.init(255, 175, 60, 110));
         }
 
-        // Draw The Heat Generator at (0, 0, 0)
+        // --- Pass 1: Solid Geometries (Triangles Batch) ---
+        // Heat Generator solids
         drawHeatGenerator(generator_active, selected_generator, hovered_generator);
 
-        // Draw Smoke / Steam Particles
+        // Smoke / Steam Particles
         smoke_soa.draw();
 
-        // Draw The 4 Infinite Resource Piles
+        // Resource Piles solids
         drawResourcePiles(selected_resource, hovered_resource);
 
-        // Draw Citizens in Batches (Eliminates 240+ batch flushes to GPU)
-        // Pass 1: Citizen bodies (RL_TRIANGLES)
+        // Buildings solids & Placement Ghost solid
+        drawBuildingsSolids(ground_hit, placing_building, placement_check.valid);
+
+        // Citizen bodies (RL_TRIANGLES)
         for (0..citizen_mgr.count) |i| {
             const body_color = if (citizen_mgr.is_warm[i]) COLOR_CITIZEN_WARM else COLOR_CITIZEN_COLD;
             rl.drawCube(
@@ -985,7 +1304,7 @@ pub fn main() !void {
             );
         }
 
-        // Pass 2: Citizen heads (RL_TRIANGLES - low-poly sphere with 4 rings and 6 slices)
+        // Citizen heads (RL_TRIANGLES - low-poly sphere with 4 rings and 6 slices)
         for (0..citizen_mgr.count) |i| {
             const head_color = if (citizen_mgr.is_warm[i]) rl.Color.init(252, 220, 195, 255) else rl.Color.init(180, 208, 230, 255);
             rl.drawSphereEx(
@@ -997,7 +1316,22 @@ pub fn main() !void {
             );
         }
 
-        // Pass 3: Citizen wireframe accents (RL_LINES)
+        // --- Pass 2: Lines & Outlines (Lines Batch) ---
+        // Concentric District Rings
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 12.0, 12.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 20.0, 20.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 30.0, 30.0, 0.01, 64, COLOR_SNOW_RINGS);
+        rl.drawCylinderWires(.{ .x = 0, .y = 0.01, .z = 0 }, 42.0, 42.0, 0.01, 64, COLOR_SNOW_RINGS);
+
+        if (generator_active) {
+            rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS, GENERATOR_HEAT_RADIUS, 0.05, 64, COLOR_HEAT_ZONE_RING);
+            rl.drawCylinderWires(.{ .x = 0, .y = 0.05, .z = 0 }, GENERATOR_HEAT_RADIUS * 0.5, GENERATOR_HEAT_RADIUS * 0.5, 0.04, 48, rl.Color.init(255, 175, 60, 110));
+        }
+
+        // Buildings wires & Placement Ghost wires
+        drawBuildingsWires(selected_building, hovered_building, ground_hit, placing_building, placement_check.valid);
+
+        // Citizen wireframe accents
         for (0..citizen_mgr.count) |i| {
             rl.drawCubeWires(
                 .{ .x = citizen_mgr.pos_x[i], .y = 0.45, .z = citizen_mgr.pos_z[i] },
@@ -1011,7 +1345,7 @@ pub fn main() !void {
         camera.end();
 
         // 3. 2D HUD & Interactive Management UI
-        drawHUD(warm_count, cold_count, current_cached_ui);
+        drawHUD(warm_count, cold_count, current_cached_ui, camera, mouse_pos, placement_check);
 
         // 4. Pause Menu Modal Overlay (if paused)
         if (is_paused) {
@@ -1167,6 +1501,84 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
         const pos = FOOD_PILE_POSITION;
         rl.drawCubeWires(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, rl.Color.init(100, 25, 20, 255));
         rl.drawCubeWires(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(90, 20, 18, 255));
+    }
+}
+
+fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool) void {
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .constructing) {
+            // Foundation slab
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.2, .z = b.pos.z }, 4.2, 0.4, 4.2, COLOR_SCAFFOLDING);
+
+            // 4 corner timber scaffolding posts (height rises with progress)
+            const post_h = @max(0.6, 3.2 * b.progress);
+            rl.drawCube(.{ .x = b.pos.x - 1.8, .y = post_h / 2.0, .z = b.pos.z - 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x + 1.8, .y = post_h / 2.0, .z = b.pos.z - 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x - 1.8, .y = post_h / 2.0, .z = b.pos.z + 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+            rl.drawCube(.{ .x = b.pos.x + 1.8, .y = post_h / 2.0, .z = b.pos.z + 1.8 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+
+            // Partial walls rising with progress
+            const wall_h = 2.2 * b.progress;
+            if (wall_h > 0.15) {
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.4 + wall_h / 2.0, .z = b.pos.z }, 3.6, wall_h, 3.6, COLOR_HOUSE_WALLS);
+            }
+        } else {
+            // Completed House
+            // Base foundation
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.2, .z = b.pos.z }, 4.2, 0.4, 4.2, rl.Color.init(55, 42, 32, 255));
+            // Main timber walls
+            rl.drawCube(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.8, 2.2, 3.8, COLOR_HOUSE_WALLS);
+            // Peaked slate roof
+            rl.drawCube(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 4.2, 0.75, 4.2, COLOR_HOUSE_ROOF);
+            rl.drawCube(.{ .x = b.pos.x, .y = 3.35, .z = b.pos.z }, 4.3, 0.35, 1.8, rl.Color.init(45, 52, 60, 255));
+            // Chimney
+            rl.drawCube(.{ .x = b.pos.x + 1.2, .y = 3.2, .z = b.pos.z + 1.1 }, 0.7, 1.6, 0.7, COLOR_HOUSE_CHIMNEY);
+            // Front door
+            rl.drawCube(.{ .x = b.pos.x, .y = 0.8, .z = b.pos.z + 1.95 }, 1.0, 1.3, 0.15, rl.Color.init(42, 30, 22, 255));
+            // Windows
+            const win_color = if (b.is_warm) rl.Color.init(255, 210, 85, 255) else rl.Color.init(130, 175, 220, 255);
+            rl.drawCube(.{ .x = b.pos.x - 1.95, .y = 1.5, .z = b.pos.z }, 0.15, 0.8, 0.8, win_color);
+            rl.drawCube(.{ .x = b.pos.x + 1.95, .y = 1.5, .z = b.pos.z }, 0.15, 0.8, 0.8, win_color);
+        }
+    }
+
+    // Ghost preview (solids)
+    if (placing != null) {
+        if (cand_pos) |pos| {
+            const col = if (can_place) COLOR_GHOST_VALID else COLOR_GHOST_INVALID;
+            rl.drawCylinder(.{ .x = pos.x, .y = 0.04, .z = pos.z }, HOUSE_COLLISION_RADIUS, HOUSE_COLLISION_RADIUS, 0.06, 32, col);
+            rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.8, 2.2, 3.8, col);
+            rl.drawCube(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 4.2, 0.75, 4.2, col);
+            rl.drawCube(.{ .x = pos.x + 1.2, .y = 3.2, .z = pos.z + 1.1 }, 0.7, 1.6, 0.7, col);
+        }
+    }
+}
+
+fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool) void {
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .constructing) {
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 4.2, 3.2, 4.2, COLOR_SCAFFOLDING);
+        } else {
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.8, 2.2, 3.8, rl.Color.init(35, 25, 20, 255));
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 4.2, 0.75, 4.2, rl.Color.init(30, 36, 42, 255));
+            rl.drawCubeWires(.{ .x = b.pos.x + 1.2, .y = 3.2, .z = b.pos.z + 1.1 }, 0.7, 1.6, 0.7, rl.Color.init(25, 20, 18, 255));
+        }
+
+        if (selected == b.id) {
+            rl.drawCylinderWires(.{ .x = b.pos.x, .y = 0.08, .z = b.pos.z }, 4.4, 4.4, 0.12, 32, rl.Color.gold);
+        } else if (hovered == b.id) {
+            rl.drawCylinderWires(.{ .x = b.pos.x, .y = 0.06, .z = b.pos.z }, 4.4, 4.4, 0.08, 32, rl.Color.init(180, 220, 255, 180));
+        }
+    }
+
+    // Ghost preview (wires)
+    if (placing != null) {
+        if (cand_pos) |pos| {
+            const wire_col = if (can_place) rl.Color.init(90, 255, 150, 255) else rl.Color.init(255, 80, 80, 255);
+            rl.drawCylinderWires(.{ .x = pos.x, .y = 0.08, .z = pos.z }, HOUSE_COLLISION_RADIUS, HOUSE_COLLISION_RADIUS, 0.12, 32, wire_col);
+            rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.8, 2.2, 3.8, wire_col);
+            rl.drawCubeWires(.{ .x = pos.x, .y = 2.85, .z = pos.z }, 4.2, 0.75, 4.2, wire_col);
+        }
     }
 }
 
@@ -1373,7 +1785,313 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
     }
 }
 
-fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
+fn drawBuildingLabels(camera: rl.Camera3D) void {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .constructing) {
+            const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.6, .z = b.pos.z }, camera);
+            if (screen_pos.x > -50 and screen_pos.x < sw + 50 and screen_pos.y > -50 and screen_pos.y < sh + 50) {
+                const bar_w: f32 = 110.0;
+                const bar_h: f32 = 10.0;
+                const bar_x = screen_pos.x - bar_w / 2.0;
+                const card_h: f32 = 42.0;
+                const card_y = screen_pos.y - card_h / 2.0;
+                const bar_y = card_y + 18.0;
+
+                // Card background
+                rl.drawRectangleRounded(
+                    rl.Rectangle.init(bar_x - 8, card_y, bar_w + 16, card_h),
+                    0.25,
+                    6,
+                    rl.Color.init(18, 22, 28, 230),
+                );
+                rl.drawRectangleRoundedLinesEx(
+                    rl.Rectangle.init(bar_x - 8, card_y, bar_w + 16, card_h),
+                    0.25,
+                    6,
+                    1.2,
+                    COLOR_SCAFFOLDING,
+                );
+
+                // Title & percentage
+                const pct = @as(i32, @intFromFloat(b.progress * 100.0));
+                rl.drawText(
+                    fmt("House: {d}%", .{pct}),
+                    @intFromFloat(bar_x),
+                    @intFromFloat(card_y + 4),
+                    11,
+                    rl.Color.init(245, 205, 70, 255),
+                );
+
+                // Progress Bar Background
+                rl.drawRectangle(
+                    @intFromFloat(bar_x),
+                    @intFromFloat(bar_y),
+                    @intFromFloat(bar_w),
+                    @intFromFloat(bar_h),
+                    rl.Color.init(35, 40, 50, 255),
+                );
+                // Progress Bar Fill
+                const fill_w = bar_w * std.math.clamp(b.progress, 0.0, 1.0);
+                rl.drawRectangle(
+                    @intFromFloat(bar_x),
+                    @intFromFloat(bar_y),
+                    @intFromFloat(fill_w),
+                    @intFromFloat(bar_h),
+                    COLOR_SCAFFOLDING,
+                );
+                rl.drawRectangleLines(
+                    @intFromFloat(bar_x),
+                    @intFromFloat(bar_y),
+                    @intFromFloat(bar_w),
+                    @intFromFloat(bar_h),
+                    rl.Color.init(80, 95, 115, 255),
+                );
+
+                // Builder status
+                if (b.active_builders > 0) {
+                    rl.drawText(
+                        fmt("{d}/{d} Builders", .{ b.active_builders, b.btype.maxBuilders() }),
+                        @intFromFloat(bar_x),
+                        @intFromFloat(card_y + 30),
+                        10,
+                        rl.Color.init(130, 225, 160, 255),
+                    );
+                } else {
+                    rl.drawText(
+                        "Paused (0 Idle)",
+                        @intFromFloat(bar_x),
+                        @intFromFloat(card_y + 30),
+                        10,
+                        rl.Color.init(255, 120, 100, 255),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn drawBuildingDialog(sw_f: f32) void {
+    if (selected_building) |bid| {
+        if (bid < buildings_count) {
+            const b = buildings[bid];
+            const panel_w: f32 = 250.0;
+            const panel_h: f32 = 175.0;
+            const panel_x: f32 = sw_f - panel_w - 16.0;
+            const panel_y: f32 = 46.0 + 14.0;
+
+            rl.drawRectangleRounded(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, rl.Color.init(20, 24, 32, 245));
+            rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, rl.Color.init(184, 138, 72, 255));
+
+            // Title icon + text
+            rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, COLOR_WOOD_PILE);
+            const title_str = fmt("HOUSE #{d}", .{bid + 1});
+            rl.drawText(title_str, @intFromFloat(panel_x + 32), @intFromFloat(panel_y + 10), 16, rl.Color.init(245, 205, 70, 255));
+
+            // Close button [x]
+            if (!is_paused) {
+                if (rg.button(rl.Rectangle.init(panel_x + panel_w - 28, panel_y + 8, 20, 20), "x")) {
+                    selected_building = null;
+                }
+            }
+
+            // Subtitle
+            rl.drawText("Residential Shelter", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
+
+            // Status
+            if (b.state == .completed) {
+                rl.drawText("STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
+                _ = rl.drawText(fmt("Shelter: {d} Citizens", .{b.btype.capacity()}), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 76), 13, rl.Color.white);
+                if (b.is_warm) {
+                    rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, COLOR_CITIZEN_WARM);
+                } else {
+                    rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, rl.Color.init(110, 185, 255, 255));
+                }
+            } else {
+                rl.drawText("STATUS: UNDER CONSTRUCTION", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(245, 195, 65, 255));
+                const pct = @as(i32, @intFromFloat(b.progress * 100.0));
+                _ = rl.drawText(fmt("Progress: {d}%", .{pct}), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 76), 13, rl.Color.white);
+                _ = rl.drawText(fmt("Active Builders: {d}/{d}", .{ b.active_builders, b.btype.maxBuilders() }), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, rl.Color.init(180, 200, 220, 255));
+            }
+
+            rl.drawText("Protects citizens against the freezing cold", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 135), 11, rl.Color.init(140, 155, 175, 255));
+        }
+    }
+}
+
+fn drawBuildUI(mouse_pos: rl.Vector2) void {
+    const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
+    const bot_bar_h: f32 = 30.0;
+
+    // 1. Build Button (Bottom-Left)
+    const btn_w: f32 = 126.0;
+    const btn_h: f32 = 36.0;
+    const btn_x: f32 = 16.0;
+    const btn_y: f32 = sh - bot_bar_h - btn_h - 10.0;
+
+    const btn_rect = rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h);
+    const btn_hovered = rl.checkCollisionPointRec(mouse_pos, btn_rect);
+
+    const btn_bg = if (build_menu_open)
+        rl.Color.init(245, 195, 65, 255)
+    else if (btn_hovered)
+        rl.Color.init(42, 52, 68, 255)
+    else
+        rl.Color.init(22, 28, 38, 245);
+
+    const btn_border = if (build_menu_open)
+        rl.Color.init(255, 225, 120, 255)
+    else if (btn_hovered)
+        rl.Color.init(245, 195, 65, 255)
+    else
+        rl.Color.init(90, 110, 135, 255);
+
+    const btn_text_color = if (build_menu_open)
+        rl.Color.init(15, 18, 24, 255)
+    else if (btn_hovered)
+        rl.Color.init(255, 225, 120, 255)
+    else
+        rl.Color.init(220, 230, 240, 255);
+
+    rl.drawRectangleRounded(btn_rect, 0.25, 6, btn_bg);
+    rl.drawRectangleRoundedLinesEx(btn_rect, 0.25, 6, if (build_menu_open or btn_hovered) 2.0 else 1.2, btn_border);
+
+    // Accent icon
+    rl.drawRectangle(@intFromFloat(btn_x + 12), @intFromFloat(btn_y + 11), 14, 14, if (build_menu_open) rl.Color.init(30, 36, 46, 255) else rl.Color.init(245, 195, 65, 255));
+    rl.drawText("[B] BUILD", @intFromFloat(btn_x + 34), @intFromFloat(btn_y + 11), 14, btn_text_color);
+
+    // 2. Build Strip (Bottom Drawer)
+    if (build_menu_open) {
+        const strip_h: f32 = 148.0;
+        const strip_y: f32 = sh - bot_bar_h - strip_h;
+        const strip_rect = rl.Rectangle.init(0, strip_y, sw, strip_h);
+
+        // Dark metal background
+        rl.drawRectangleRec(strip_rect, rl.Color.init(18, 22, 30, 248));
+        rl.drawRectangle(0, @intFromFloat(strip_y), @intFromFloat(sw), 2, rl.Color.init(65, 80, 102, 255));
+
+        // --- Tabs Header ---
+        const tab_y = strip_y + 8.0;
+        const tab_w: f32 = 110.0;
+        const tab_h: f32 = 28.0;
+
+        // Tab 1: "People" (Active Tab)
+        const tab_people_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
+        rl.drawRectangleRounded(tab_people_rect, 0.25, 4, rl.Color.init(42, 54, 72, 255));
+        rl.drawRectangleRoundedLinesEx(tab_people_rect, 0.25, 4, 1.5, rl.Color.init(245, 195, 65, 255));
+        rl.drawText("PEOPLE", 46, @intFromFloat(tab_y + 7), 13, rl.Color.init(245, 210, 80, 255));
+        rl.drawRectangle(18, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(245, 195, 65, 255));
+
+        // Inactive tabs
+        const tab_res_rect = rl.Rectangle.init(134.0, tab_y, tab_w + 10, tab_h);
+        rl.drawRectangleRounded(tab_res_rect, 0.25, 4, rl.Color.init(24, 28, 36, 180));
+        rl.drawText("RESOURCES", 146, @intFromFloat(tab_y + 7), 12, rl.Color.init(100, 112, 128, 255));
+
+        const tab_heat_rect = rl.Rectangle.init(262.0, tab_y, tab_w, tab_h);
+        rl.drawRectangleRounded(tab_heat_rect, 0.25, 4, rl.Color.init(24, 28, 36, 180));
+        rl.drawText("HEATING", 284, @intFromFloat(tab_y + 7), 12, rl.Color.init(100, 112, 128, 255));
+
+        // Close button [x]
+        const close_btn_rect = rl.Rectangle.init(sw - 36.0, tab_y, 24.0, 24.0);
+        const close_hovered = rl.checkCollisionPointRec(mouse_pos, close_btn_rect);
+        rl.drawRectangleRounded(close_btn_rect, 0.2, 4, if (close_hovered) rl.Color.init(200, 50, 50, 255) else rl.Color.init(32, 38, 48, 255));
+        rl.drawText("x", @intFromFloat(sw - 29), @intFromFloat(tab_y + 3), 15, rl.Color.white);
+
+        // --- Building Card: House ---
+        const card_x: f32 = 16.0;
+        const card_y: f32 = strip_y + 44.0;
+        const card_w: f32 = 230.0;
+        const card_h: f32 = 92.0;
+        const card_rect = rl.Rectangle.init(card_x, card_y, card_w, card_h);
+        const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect);
+
+        const current_wood = stockpiles[@intFromEnum(Resource.wood)];
+        const can_afford = current_wood >= HOUSE_WOOD_COST;
+
+        const card_bg = if (card_hovered)
+            rl.Color.init(34, 42, 56, 255)
+        else
+            rl.Color.init(24, 30, 40, 240);
+
+        const card_border = if (card_hovered)
+            rl.Color.init(245, 195, 65, 255)
+        else
+            rl.Color.init(65, 80, 102, 255);
+
+        rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+        rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered) 2.0 else 1.2, card_border);
+
+        // Mini House Preview Icon
+        rl.drawRectangle(@intFromFloat(card_x + 12), @intFromFloat(card_y + 14), 28, 22, COLOR_HOUSE_WALLS);
+        rl.drawRectangle(@intFromFloat(card_x + 10), @intFromFloat(card_y + 8), 32, 8, COLOR_HOUSE_ROOF);
+        rl.drawRectangle(@intFromFloat(card_x + 28), @intFromFloat(card_y + 4), 6, 8, COLOR_HOUSE_CHIMNEY);
+
+        // Building Name
+        rl.drawText("House", @intFromFloat(card_x + 50), @intFromFloat(card_y + 10), 16, rl.Color.white);
+
+        // Cost Badge
+        const cost_pill_rect = rl.Rectangle.init(card_x + 50, card_y + 32, 102, 20);
+        rl.drawRectangleRounded(cost_pill_rect, 0.3, 4, if (can_afford) rl.Color.init(28, 55, 38, 255) else rl.Color.init(60, 28, 28, 255));
+        rl.drawRectangleRoundedLinesEx(cost_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(80, 185, 115, 255) else rl.Color.init(215, 70, 70, 255));
+        const cost_text = fmt("Cost: {d} Wood", .{@as(i32, @intFromFloat(HOUSE_WOOD_COST))});
+        rl.drawText(cost_text, @intFromFloat(card_x + 56), @intFromFloat(card_y + 36), 11, if (can_afford) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
+
+        // Capacity & Builder Specs
+        rl.drawText("Capacity: 10 People", @intFromFloat(card_x + 50), @intFromFloat(card_y + 57), 11, rl.Color.init(180, 195, 215, 255));
+        rl.drawText("Builders: Up to 10 (20s)", @intFromFloat(card_x + 50), @intFromFloat(card_y + 72), 11, rl.Color.init(140, 160, 185, 255));
+
+        // Click instruction tip
+        if (card_hovered) {
+            rl.drawText(
+                if (can_afford) "Click to select and place in the snow" else "Cannot afford (Requires 20 Wood)",
+                @intFromFloat(card_x + card_w + 16),
+                @intFromFloat(card_y + 36),
+                13,
+                if (can_afford) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
+            );
+        }
+    }
+}
+
+fn drawPlacementTooltip(mouse_pos: rl.Vector2, check: PlacementCheck) void {
+    const tip_x: i32 = @as(i32, @intFromFloat(mouse_pos.x)) + 20;
+    const tip_y: i32 = @as(i32, @intFromFloat(mouse_pos.y)) + 16;
+
+    const text = if (check.valid)
+        fmt("[LMB] Place House (Cost: {d} Wood) | [RMB/Esc] Cancel", .{@as(i32, @intFromFloat(HOUSE_WOOD_COST))})
+    else
+        fmt("Cannot Place: {s} | [RMB/Esc] Cancel", .{check.reason});
+
+    const tw = rl.measureText(text, 12);
+    const box_w = tw + 20;
+    const box_h = 24;
+
+    rl.drawRectangleRounded(
+        rl.Rectangle.init(@floatFromInt(tip_x), @floatFromInt(tip_y), @floatFromInt(box_w), @floatFromInt(box_h)),
+        0.3,
+        4,
+        rl.Color.init(16, 20, 28, 240),
+    );
+    rl.drawRectangleRoundedLinesEx(
+        rl.Rectangle.init(@floatFromInt(tip_x), @floatFromInt(tip_y), @floatFromInt(box_w), @floatFromInt(box_h)),
+        0.3,
+        4,
+        1.2,
+        if (check.valid) rl.Color.init(80, 220, 140, 255) else rl.Color.init(235, 70, 70, 255),
+    );
+    rl.drawText(
+        text,
+        tip_x + 10,
+        tip_y + 6,
+        12,
+        if (check.valid) rl.Color.init(140, 245, 175, 255) else rl.Color.init(255, 110, 110, 255),
+    );
+}
+
+fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.Camera3D, mouse_pos: rl.Vector2, placement_check: PlacementCheck) void {
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
@@ -1381,6 +2099,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     // 3D FLOATING WORLD LABELS
     // ------------------------------------------------------------------------
     drawWorldLabels(cached);
+    drawBuildingLabels(camera);
 
     // ------------------------------------------------------------------------
     // TOP STATUS BAR (Stockpiles & Population Overview)
@@ -1397,10 +2116,10 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     const fps_badge_w: i32 = 76;
     const fps_box_x: i32 = screen_w - fps_badge_w - 12;
 
-    const pop_box_w: i32 = 265;
+    const pop_box_w: i32 = 360;
     const pop_box_x: i32 = fps_box_x - pop_box_w - 14;
 
-    const available_res_w: i32 = @max(340, pop_box_x - res_start_x - 16);
+    const available_res_w: i32 = @max(320, pop_box_x - res_start_x - 16);
     const col_w: i32 = @min(105, @divTrunc(available_res_w, 4));
 
     var cur_x: i32 = res_start_x;
@@ -1428,7 +2147,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
             rl.Color.white,
         );
 
-        // Gathering rate text (Red if coal is draining, green if positive, gray if zero)
+        // Gathering rate text
         const rate_color = if (net_rate > 0.01)
             rl.Color.init(120, 230, 140, 255)
         else if (net_rate < -0.01)
@@ -1448,30 +2167,52 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
         cur_x += col_w;
     }
 
-    // Population & Warmth Overview (Top-Right, before FPS counter)
+    // Population & Shelter Overview (Top-Right, before FPS counter)
+    var total_shelter_cap: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .completed) {
+            total_shelter_cap += b.btype.capacity();
+        }
+    }
+    const housed_count = @min(@as(i32, @intCast(total_citizens)), total_shelter_cap);
+    const shelter_color = if (housed_count >= total_citizens)
+        rl.Color.init(110, 230, 140, 255)
+    else if (housed_count > 0)
+        rl.Color.init(245, 205, 80, 255)
+    else
+        rl.Color.init(255, 120, 100, 255);
+
     _ = rl.drawText(
         fmt("Pop: {d}", .{total_citizens}),
         pop_box_x + 8,
         14,
-        15,
+        14,
         rl.Color.init(240, 245, 250, 255),
+    );
+
+    _ = rl.drawText(
+        fmt("Shelter: {d}/{d}", .{ housed_count, total_citizens }),
+        pop_box_x + 80,
+        14,
+        14,
+        shelter_color,
     );
 
     // Warm tag
     _ = rl.drawText(
         fmt("Warm: {d}", .{warm_count}),
-        pop_box_x + 88,
+        pop_box_x + 195,
         14,
-        15,
+        14,
         COLOR_CITIZEN_WARM,
     );
 
     // Cold tag
     _ = rl.drawText(
         fmt("Cold: {d}", .{cold_count}),
-        pop_box_x + 175,
+        pop_box_x + 278,
         14,
-        15,
+        14,
         rl.Color.init(110, 185, 255, 255),
     );
 
@@ -1504,7 +2245,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     );
 
     // ------------------------------------------------------------------------
-    // FUEL WARNING BANNER (If out of coal or cannot ignite)
+    // FUEL WARNING BANNER
     // ------------------------------------------------------------------------
     if (fuel_warning_timer > 0.0) {
         const banner_h: f32 = 26.0;
@@ -1522,11 +2263,11 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     }
 
     // ------------------------------------------------------------------------
-    // IN-WORLD INTERACTION TIP (When nothing is selected)
+    // IN-WORLD INTERACTION TIP
     // ------------------------------------------------------------------------
-    if (selected_resource == null and !selected_generator) {
+    if (selected_resource == null and !selected_generator and selected_building == null and !build_menu_open and placing_building == null) {
         rl.drawText(
-            "TIP: Click any resource pile to assign workers, or click the Heat Generator to open its control dialog",
+            "TIP: Press [B] or click Build to construct Houses | Click any resource pile or building to inspect",
             18,
             @intFromFloat(@as(f32, @floatFromInt(screen_h)) - 55.0),
             13,
@@ -1535,7 +2276,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     }
 
     // ------------------------------------------------------------------------
-    // HEAT GENERATOR DIALOG (Appears ONLY when the Heat Generator is selected)
+    // HEAT GENERATOR DIALOG
     // ------------------------------------------------------------------------
     if (selected_generator) {
         const gen_panel_w: f32 = 270.0;
@@ -1557,21 +2298,19 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
             if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(245, 195, 65, 255),
         );
 
-        // Header: Orange heat icon + Title
+        // Header
         rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 12), 12, 14, COLOR_GENERATOR_LIT);
         rl.drawText("THE HEAT GENERATOR", @intFromFloat(gen_panel_x + 32), @intFromFloat(gen_panel_y + 10), 16, rl.Color.init(245, 205, 70, 255));
 
-        // Close button [X]
+        // Close button [x]
         if (!is_paused) {
             if (rg.button(rl.Rectangle.init(gen_panel_x + gen_panel_w - 28, gen_panel_y + 8, 20, 20), "x")) {
                 selected_generator = false;
             }
         }
 
-        // Subtitle
         rl.drawText("Central Thermal Facility", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
-        // Status Indicator
         if (generator_active) {
             rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, COLOR_GENERATOR_LIT);
             rl.drawText("ONLINE - HEATING ACTIVE", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, COLOR_GENERATOR_LIT);
@@ -1580,7 +2319,6 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
             rl.drawText("OFFLINE - COLD", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, rl.Color.init(150, 160, 170, 255));
         }
 
-        // Toggle Button
         const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
         const btn_label = if (generator_active)
             "TURN HEAT GENERATOR OFF"
@@ -1595,7 +2333,6 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
             }
         }
 
-        // Generator details
         _ = rl.drawText(
             fmt("Heat Radius: {d:.1} m", .{GENERATOR_HEAT_RADIUS}),
             @intFromFloat(gen_panel_x + 14),
@@ -1612,7 +2349,6 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
             if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
         );
 
-        // Coal fuel status and burn time
         _ = rl.drawText(
             fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
             @intFromFloat(gen_panel_x + 14),
@@ -1657,6 +2393,11 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     }
 
     // ------------------------------------------------------------------------
+    // BUILDING INSPECTION DIALOG
+    // ------------------------------------------------------------------------
+    drawBuildingDialog(@as(f32, @floatFromInt(screen_w)));
+
+    // ------------------------------------------------------------------------
     // BOTTOM BAR: KEYBINDINGS HINT
     // ------------------------------------------------------------------------
     const bot_h: f32 = 30.0;
@@ -1664,12 +2405,24 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI) void {
     rl.drawRectangle(0, @intFromFloat(bot_y), screen_w, @intFromFloat(bot_h), rl.Color.init(18, 22, 28, 220));
 
     rl.drawText(
-        "CONTROLS: [Click Heat Generator] Open Controls  |  [Click Pile] Manage Workers On-Site  |  [W/A/S/D / Arrows / RMB Drag] Pan  |  [Wheel] Zoom  |  [ESC] Pause Menu",
+        "CONTROLS: [B] Build Menu  |  [Click Building/Pile/Generator] Select & Manage  |  [W/A/S/D / RMB Drag] Pan  |  [Wheel] Zoom  |  [ESC] Pause",
         18,
         @intFromFloat(bot_y + 8),
         13,
         rl.Color.init(180, 195, 210, 255),
     );
+
+    // ------------------------------------------------------------------------
+    // BUILD BUTTON & BUILD STRIP
+    // ------------------------------------------------------------------------
+    drawBuildUI(mouse_pos);
+
+    // ------------------------------------------------------------------------
+    // PLACEMENT TOOLTIP (When in placement mode)
+    // ------------------------------------------------------------------------
+    if (placing_building != null) {
+        drawPlacementTooltip(mouse_pos, placement_check);
+    }
 }
 
 // ============================================================================
