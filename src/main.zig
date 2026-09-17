@@ -662,6 +662,7 @@ var hovered_building: ?usize = null;
 
 var is_paused: bool = false;
 var show_controls_dialog: bool = false;
+var pause_menu_selected_idx: usize = 0;
 var should_quit: bool = false;
 var fuel_warning_timer: f32 = 0.0;
 
@@ -866,6 +867,7 @@ fn initGame() void {
     hovered_building = null;
     show_controls_dialog = false;
     is_paused = false;
+    pause_menu_selected_idx = 0;
 
     citizen_mgr.init(@intCast(@min(STARTING_POPULATION, MAX_CITIZENS)));
     total_citizens = citizen_mgr.count;
@@ -1109,6 +1111,7 @@ pub fn main() !void {
             if (show_controls_dialog) {
                 show_controls_dialog = false;
                 is_paused = false;
+                pause_menu_selected_idx = 0;
             } else if (placing_building != null) {
                 placing_building = null;
             } else if (build_menu_open) {
@@ -1119,6 +1122,7 @@ pub fn main() !void {
                 selected_building = null;
             } else {
                 is_paused = !is_paused;
+                pause_menu_selected_idx = 0;
             }
         }
 
@@ -2912,19 +2916,96 @@ fn drawPauseMenu() void {
     const btn_h: f32 = 38.0;
     const btn_x: f32 = modal_x + (modal_w - btn_w) / 2.0;
 
-    // Continue Button
-    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 92, btn_w, btn_h), "CONTINUE")) {
-        is_paused = false;
+    const buttons = [_]struct {
+        label: [:0]const u8,
+        rect: rl.Rectangle,
+    }{
+        .{ .label = "CONTINUE", .rect = rl.Rectangle.init(btn_x, modal_y + 92, btn_w, btn_h) },
+        .{ .label = "CONTROLS", .rect = rl.Rectangle.init(btn_x, modal_y + 144, btn_w, btn_h) },
+        .{ .label = "QUIT GAME", .rect = rl.Rectangle.init(btn_x, modal_y + 196, btn_w, btn_h) },
+    };
+
+    // Keyboard navigation with Arrow keys
+    if (rl.isKeyPressed(.up) or rl.isKeyPressed(.w)) {
+        if (pause_menu_selected_idx == 0) {
+            pause_menu_selected_idx = 2;
+        } else {
+            pause_menu_selected_idx -= 1;
+        }
+    } else if (rl.isKeyPressed(.down) or rl.isKeyPressed(.s)) {
+        pause_menu_selected_idx = (pause_menu_selected_idx + 1) % 3;
     }
 
-    // Controls Button
-    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 144, btn_w, btn_h), "CONTROLS")) {
-        show_controls_dialog = true;
+    // Mouse movement hover updates selection
+    const mouse_delta = rl.getMouseDelta();
+    if (@abs(mouse_delta.x) > 0.5 or @abs(mouse_delta.y) > 0.5) {
+        const mouse_pos = rl.getMousePosition();
+        for (buttons, 0..) |btn, idx| {
+            if (rl.checkCollisionPointRec(mouse_pos, btn.rect)) {
+                pause_menu_selected_idx = idx;
+                break;
+            }
+        }
     }
 
-    // Quit Button
-    if (rg.button(rl.Rectangle.init(btn_x, modal_y + 196, btn_w, btn_h), "QUIT GAME")) {
-        should_quit = true;
+    var clicked_idx: ?usize = null;
+    for (buttons, 0..) |btn, idx| {
+        const is_sel = (pause_menu_selected_idx == idx);
+
+        if (is_sel) {
+            // Amber glow background behind selected button
+            rl.drawRectangleRounded(
+                rl.Rectangle.init(btn.rect.x - 3, btn.rect.y - 3, btn.rect.width + 6, btn.rect.height + 6),
+                0.22,
+                6,
+                rl.Color.init(245, 205, 70, 45),
+            );
+        }
+
+        if (rg.button(btn.rect, btn.label)) {
+            clicked_idx = idx;
+        }
+
+        if (is_sel) {
+            // Bright gold border highlight
+            rl.drawRectangleRoundedLinesEx(
+                rl.Rectangle.init(btn.rect.x - 2, btn.rect.y - 2, btn.rect.width + 4, btn.rect.height + 4),
+                0.22,
+                6,
+                2.0,
+                rl.Color.init(245, 205, 70, 255),
+            );
+        }
+    }
+
+    // Navigation hint footer
+    const nav_hint = "[Up / Down] Select   [Enter] Confirm";
+    const hint_w = rl.measureText(nav_hint, 11);
+    rl.drawText(
+        nav_hint,
+        @intFromFloat(modal_x + (modal_w - @as(f32, @floatFromInt(hint_w))) / 2.0),
+        @intFromFloat(modal_y + 248),
+        11,
+        rl.Color.init(130, 150, 175, 255),
+    );
+
+    const enter_pressed = rl.isKeyPressed(.enter) or rl.isKeyPressed(.kp_enter);
+    const action_idx = if (enter_pressed) pause_menu_selected_idx else clicked_idx;
+
+    if (action_idx) |idx| {
+        switch (idx) {
+            0 => {
+                is_paused = false;
+                pause_menu_selected_idx = 0;
+            },
+            1 => {
+                show_controls_dialog = true;
+            },
+            2 => {
+                should_quit = true;
+            },
+            else => {},
+        }
     }
 }
 
@@ -2993,6 +3074,7 @@ fn drawControlsDialog() void {
     if (rg.button(rl.Rectangle.init(modal_x + modal_w - 38, modal_y + 16, 24, 24), "x")) {
         show_controls_dialog = false;
         is_paused = false;
+        pause_menu_selected_idx = 0;
     }
 
     // Divider line
@@ -3072,8 +3154,9 @@ fn drawControlsDialog() void {
     const btn_x: f32 = modal_x + (modal_w - btn_w) / 2.0;
     const btn_y: f32 = modal_y + modal_h - 42.0;
 
-    if (rg.button(rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h), "RESUME GAME")) {
+    if (rg.button(rl.Rectangle.init(btn_x, btn_y, btn_w, btn_h), "RESUME GAME") or rl.isKeyPressed(.enter) or rl.isKeyPressed(.kp_enter)) {
         show_controls_dialog = false;
         is_paused = false;
+        pause_menu_selected_idx = 0;
     }
 }
