@@ -28,11 +28,13 @@ pub var INITIAL_WOOD_STOCKPILE: f32 = 80.0;
 pub var INITIAL_STEEL_STOCKPILE: f32 = 40.0;
 pub var INITIAL_FOOD_STOCKPILE: f32 = 80.0;
 
-// --- Gathering Rates (Resources gathered per assigned worker per second) ---
+// --- Gathering Rates & Pile Limits ---
 pub var COAL_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.40;
 pub var WOOD_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.50;
 pub var STEEL_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.25;
 pub var FOOD_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.35;
+/// Maximum workers that can be assigned to a single resource pile
+pub var PILE_WORKER_CAP: i32 = 15;
 
 // --- Resource Pile Positions (Generator is located at (0, 0, 0)) ---
 pub var COAL_PILE_POSITION: rl.Vector3 = .{ .x = -2.0, .y = 0.0, .z = -14.0 };
@@ -408,7 +410,12 @@ pub const CitizenManager = struct {
     pub fn assign(self: *CitizenManager, res: Resource, delta: i32) void {
         const res_idx = @intFromEnum(res);
         if (delta > 0) {
-            const to_add: usize = @intCast(@min(@as(i32, @intCast(self.idle_count)), delta));
+            const cur_assigned = self.assigned_counts[res_idx];
+            const cap: usize = @intCast(@max(0, PILE_WORKER_CAP));
+            if (cur_assigned >= cap) return;
+            const space_left: usize = cap - cur_assigned;
+            const available: usize = @min(self.idle_count, space_left);
+            const to_add: usize = @intCast(@min(@as(i32, @intCast(available)), delta));
             for (0..to_add) |_| {
                 if (self.idle_count == 0) break;
                 self.idle_count -= 1;
@@ -923,8 +930,8 @@ fn computePileUIBounds(r: Resource, camera: rl.Camera3D, selected: ?Resource, sw
 
     var card_rect: ?rl.Rectangle = null;
     if (selected == r) {
-        const card_w: f32 = 250.0;
-        const card_h: f32 = 175.0;
+        const card_w: f32 = 260.0;
+        const card_h: f32 = 130.0;
         var cx = badge_screen.x - card_w / 2.0;
         var cy = badge_screen.y - card_h - 14.0;
 
@@ -1199,10 +1206,11 @@ pub fn main() !void {
                     assignWorkers(sel, 1);
                 } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
                     assignWorkers(sel, -1);
-                } else if (rl.isKeyPressed(.c)) {
+                } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
                     assignWorkers(sel, -workers_assigned[@intFromEnum(sel)]);
-                } else if (rl.isKeyPressed(.a)) {
-                    assignWorkers(sel, getIdleCitizensCount());
+                } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                    const assigned = workers_assigned[@intFromEnum(sel)];
+                    assignWorkers(sel, @max(0, PILE_WORKER_CAP - assigned));
                 } else if (rl.isKeyPressed(.delete) or rl.isKeyPressed(.backspace)) {
                     selected_resource = null;
                 }
@@ -1931,13 +1939,18 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
                     if (is_hovered) rl.Color.init(255, 225, 120, 255) else rl.Color.white,
                 );
 
-                const count_text = fmt("{d} workers", .{assigned});
+                const count_text = fmt("{d}/{d} workers", .{ assigned, PILE_WORKER_CAP });
                 _ = rl.drawText(
                     count_text,
                     @intFromFloat(br.x + 25),
                     @intFromFloat(br.y + 15),
                     10,
-                    if (assigned > 0) rl.Color.init(120, 230, 140, 255) else rl.Color.init(150, 165, 180, 255),
+                    if (assigned >= PILE_WORKER_CAP)
+                        rl.Color.init(245, 205, 70, 255)
+                    else if (assigned > 0)
+                        rl.Color.init(120, 230, 140, 255)
+                    else
+                        rl.Color.init(150, 165, 180, 255),
                 );
 
                 // Right manage prompt
@@ -1951,7 +1964,6 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
             } else {
                 // --- Selected State: On-Pile Worker Management Station ---
                 if (ui.card_rect) |cr| {
-                    const idle_count = getIdleCitizensCount();
                     const rate = @as(f32, @floatFromInt(assigned)) * r.gatherRate();
 
                     // Connecting line from card to pile base/badge point
@@ -1987,79 +1999,73 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
                     }
 
                     // Subtitle
-                    rl.drawText("Resource Stockpile | 2x2 Grid", @intFromFloat(cr.x + 12), @intFromFloat(cr.y + 29), 10, rl.Color.init(140, 175, 210, 255));
+                    rl.drawText(
+                        fmt("Resource Stockpile | Max {d} Workers", .{PILE_WORKER_CAP}),
+                        @intFromFloat(cr.x + 12),
+                        @intFromFloat(cr.y + 28),
+                        10,
+                        rl.Color.init(140, 175, 210, 255),
+                    );
 
                     // Divider line 1
                     rl.drawLine(
                         @intFromFloat(cr.x + 12),
-                        @intFromFloat(cr.y + 43),
+                        @intFromFloat(cr.y + 42),
                         @intFromFloat(cr.x + cr.width - 12),
-                        @intFromFloat(cr.y + 43),
+                        @intFromFloat(cr.y + 42),
                         rl.Color.init(55, 65, 80, 255),
                     );
 
                     // Status info
                     _ = rl.drawText(
-                        fmt("Assigned: {d} workers", .{assigned}),
+                        fmt("Assigned: {d} / {d} workers", .{ assigned, PILE_WORKER_CAP }),
                         @intFromFloat(cr.x + 12),
-                        @intFromFloat(cr.y + 49),
+                        @intFromFloat(cr.y + 48),
                         13,
-                        rl.Color.white,
+                        if (assigned >= PILE_WORKER_CAP) rl.Color.init(245, 205, 70, 255) else rl.Color.white,
                     );
 
                     _ = rl.drawText(
                         fmt("Yield: +{d:.1} {s}/sec", .{ rate, r.name() }),
                         @intFromFloat(cr.x + 12),
-                        @intFromFloat(cr.y + 67),
+                        @intFromFloat(cr.y + 66),
                         12,
                         rl.Color.init(120, 230, 140, 255),
-                    );
-
-                    _ = rl.drawText(
-                        fmt("Idle Citizens: {d} / {d}", .{ idle_count, total_citizens }),
-                        @intFromFloat(cr.x + 12),
-                        @intFromFloat(cr.y + 84),
-                        12,
-                        if (idle_count > 0) rl.Color.init(190, 220, 245, 255) else rl.Color.init(240, 140, 140, 255),
                     );
 
                     // Divider line 2
                     rl.drawLine(
                         @intFromFloat(cr.x + 12),
-                        @intFromFloat(cr.y + 102),
+                        @intFromFloat(cr.y + 84),
                         @intFromFloat(cr.x + cr.width - 12),
-                        @intFromFloat(cr.y + 102),
+                        @intFromFloat(cr.y + 84),
                         rl.Color.init(50, 60, 75, 255),
                     );
 
                     // Worker Allocation Buttons (Only clickable when not paused)
                     if (!is_paused) {
-                        // Row 1: Incremental Buttons [-5] [-1] [+1] [+5]
-                        const btn_y1 = cr.y + 108.0;
+                        // Button Row: [None] [-5] [-1] [+1] [+5] [Max]
+                        const btn_y1 = cr.y + 92.0;
                         const btn_h1: f32 = 26.0;
 
-                        if (rg.button(rl.Rectangle.init(cr.x + 12, btn_y1, 46, btn_h1), "-5")) {
-                            assignWorkers(r, -5);
-                        }
-                        if (rg.button(rl.Rectangle.init(cr.x + 64, btn_y1, 40, btn_h1), "-1")) {
-                            assignWorkers(r, -1);
-                        }
-                        if (rg.button(rl.Rectangle.init(cr.x + 110, btn_y1, 40, btn_h1), "+1")) {
-                            assignWorkers(r, 1);
-                        }
-                        if (rg.button(rl.Rectangle.init(cr.x + 156, btn_y1, 46, btn_h1), "+5")) {
-                            assignWorkers(r, 5);
-                        }
-
-                        // Row 2: Bulk Buttons [Recall All] [Assign All Idle]
-                        const btn_y2 = cr.y + 140.0;
-                        const btn_h2: f32 = 24.0;
-
-                        if (rg.button(rl.Rectangle.init(cr.x + 12, btn_y2, 106, btn_h2), "Recall All")) {
+                        if (rg.button(rl.Rectangle.init(cr.x + 12, btn_y1, 42, btn_h1), "None")) {
                             assignWorkers(r, -assigned);
                         }
-                        if (rg.button(rl.Rectangle.init(cr.x + 124, btn_y2, 114, btn_h2), "+All Idle")) {
-                            assignWorkers(r, idle_count);
+                        if (rg.button(rl.Rectangle.init(cr.x + 58, btn_y1, 34, btn_h1), "-5")) {
+                            assignWorkers(r, -5);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 96, btn_y1, 32, btn_h1), "-1")) {
+                            assignWorkers(r, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 132, btn_y1, 32, btn_h1), "+1")) {
+                            assignWorkers(r, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 168, btn_y1, 34, btn_h1), "+5")) {
+                            assignWorkers(r, 5);
+                        }
+                        if (rg.button(rl.Rectangle.init(cr.x + 206, btn_y1, 42, btn_h1), "Max")) {
+                            const to_fill = @max(0, PILE_WORKER_CAP - assigned);
+                            assignWorkers(r, to_fill);
                         }
                     }
                 }
@@ -3036,7 +3042,7 @@ fn drawControlsDialog() void {
 
     drawControlSectionHeader(col2_x, y2, "SETTLEMENT MANAGEMENT");
     y2 += 22.0;
-    drawControlRow(col2_x, y2, "Click Resource Pile", "Assign or remove workers");
+    drawControlRow(col2_x, y2, "Click Resource Pile", "Assign workers (Max 15 per pile)");
     y2 += 22.0;
     drawControlRow(col2_x, y2, "Click Heat Generator", "Toggle heating ON / OFF");
     y2 += 22.0;
