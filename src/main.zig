@@ -277,10 +277,11 @@ pub const CitizenRole = enum {
     gathering_steel,
     gathering_food,
     working_greenhouse,
+    working_lab,
 
     pub fn toResource(self: CitizenRole) ?Resource {
         return switch (self) {
-            .idle, .working_greenhouse => null,
+            .idle, .working_greenhouse, .working_lab => null,
             .gathering_coal => .coal,
             .gathering_wood => .wood,
             .gathering_steel => .steel,
@@ -766,6 +767,16 @@ fn hasCompletedLab() bool {
     return false;
 }
 
+fn getTotalLabWorkers() i32 {
+    var total: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.btype == .lab and b.state == .completed) {
+            total += b.assigned_workers;
+        }
+    }
+    return total;
+}
+
 fn assignGreenhouseWorkers(idx: usize, delta: i32) void {
     if (idx >= buildings_count) return;
     var b = &buildings[idx];
@@ -820,10 +831,67 @@ fn assignGreenhouseWorkers(idx: usize, delta: i32) void {
     }
 }
 
+fn assignLabWorkers(idx: usize, delta: i32) void {
+    if (idx >= buildings_count) return;
+    var b = &buildings[idx];
+    if (b.btype != .lab or b.state != .completed) return;
+
+    if (delta > 0) {
+        const can_add = @min(delta, @as(i32, @intCast(citizen_mgr.getIdleCount())));
+        const space = LAB_CAPACITY - b.assigned_workers;
+        const to_add = @min(can_add, space);
+        var added: i32 = 0;
+        while (added < to_add) : (added += 1) {
+            if (citizen_mgr.idle_count == 0) break;
+            citizen_mgr.idle_count -= 1;
+            const id = citizen_mgr.idle_ids[citizen_mgr.idle_count];
+            citizen_mgr.role[id] = .working_lab;
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(1.5, 3.2);
+            citizen_mgr.target_x[id] = b.pos.x + @cos(angle) * dist;
+            citizen_mgr.target_z[id] = b.pos.z + @sin(angle) * dist;
+            citizen_mgr.wander_timer[id] = randomFloat(2.0, 5.0);
+            b.assigned_workers += 1;
+        }
+    } else if (delta < 0) {
+        const to_remove = @min(-delta, b.assigned_workers);
+        var removed: i32 = 0;
+        while (removed < to_remove) : (removed += 1) {
+            var closest_id: ?usize = null;
+            var min_dist_sq: f32 = std.math.floatMax(f32);
+            for (0..citizen_mgr.count) |i| {
+                if (citizen_mgr.role[i] == .working_lab) {
+                    const dx = citizen_mgr.pos_x[i] - b.pos.x;
+                    const dz = citizen_mgr.pos_z[i] - b.pos.z;
+                    const d_sq = dx * dx + dz * dz;
+                    if (d_sq < min_dist_sq) {
+                        min_dist_sq = d_sq;
+                        closest_id = i;
+                    }
+                }
+            }
+            if (closest_id) |cid| {
+                citizen_mgr.role[cid] = .idle;
+                citizen_mgr.idle_ids[citizen_mgr.idle_count] = @intCast(cid);
+                citizen_mgr.idle_count += 1;
+                const tgt = pickTargetForRole(.idle);
+                citizen_mgr.target_x[cid] = tgt.x;
+                citizen_mgr.target_z[cid] = tgt.z;
+                b.assigned_workers -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn removeBuilding(idx: usize) void {
     if (idx >= buildings_count) return;
     if (buildings[idx].btype == .greenhouse and buildings[idx].assigned_workers > 0) {
         assignGreenhouseWorkers(idx, -buildings[idx].assigned_workers);
+    }
+    if (buildings[idx].btype == .lab and buildings[idx].assigned_workers > 0) {
+        assignLabWorkers(idx, -buildings[idx].assigned_workers);
     }
     var i = idx;
     while (i + 1 < buildings_count) : (i += 1) {
@@ -1015,6 +1083,25 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
             .y = 0.0,
             .z = @sin(angle) * dist,
         };
+    } else if (role == .working_lab) {
+        for (buildings[0..buildings_count]) |b| {
+            if (b.btype == .lab and b.state == .completed and b.assigned_workers > 0) {
+                const angle = randomFloat(0.0, std.math.pi * 2.0);
+                const dist = randomFloat(1.5, 3.2);
+                return .{
+                    .x = b.pos.x + @cos(angle) * dist,
+                    .y = 0.0,
+                    .z = b.pos.z + @sin(angle) * dist,
+                };
+            }
+        }
+        const angle = randomFloat(0.0, std.math.pi * 2.0);
+        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+        return .{
+            .x = @cos(angle) * dist,
+            .y = 0.0,
+            .z = @sin(angle) * dist,
+        };
     } else if (role.toResource()) |res| {
         const center = res.position();
         const angle = randomFloat(0.0, std.math.pi * 2.0);
@@ -1123,12 +1210,75 @@ pub const CachedSceneUI = struct {
     gen_label_on_screen: bool,
 };
 
+fn isPointInFrontOfCamera(pos: rl.Vector3, camera: rl.Camera3D) bool {
+    const cam_dir = camera.target.subtract(camera.position);
+    const to_pos = pos.subtract(camera.position);
+    return (cam_dir.x * to_pos.x + cam_dir.y * to_pos.y + cam_dir.z * to_pos.z) > 0.1;
+}
+
+fn getBuildingDialogRect(b: Building, camera: rl.Camera3D, sw: f32, sh: f32) ?rl.Rectangle {
+    const bldg_anchor = rl.Vector3{ .x = b.pos.x, .y = 3.8, .z = b.pos.z };
+    if (!isPointInFrontOfCamera(bldg_anchor, camera)) return null;
+
+    const anchor_screen = rl.getWorldToScreen(bldg_anchor, camera);
+    if (anchor_screen.x < -120.0 or anchor_screen.x > sw + 120.0 or
+        anchor_screen.y < -120.0 or anchor_screen.y > sh + 120.0)
+    {
+        return null;
+    }
+
+    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab);
+    const card_w: f32 = 250.0;
+    const card_h: f32 = if (is_worker_facility and b.state == .completed) 226.0 else 188.0;
+
+    var cx = anchor_screen.x - card_w / 2.0;
+    var cy = anchor_screen.y - card_h - 14.0;
+
+    if (cy < 52.0) {
+        cy = anchor_screen.y + 22.0;
+    }
+
+    cx = std.math.clamp(cx, 16.0, sw - card_w - 16.0);
+    cy = std.math.clamp(cy, 52.0, sh - card_h - 36.0);
+
+    return rl.Rectangle.init(cx, cy, card_w, card_h);
+}
+
+fn getGeneratorDialogRect(camera: rl.Camera3D, sw: f32, sh: f32) ?rl.Rectangle {
+    const gen_anchor = rl.Vector3{ .x = 0.0, .y = 11.0, .z = 0.0 };
+    if (!isPointInFrontOfCamera(gen_anchor, camera)) return null;
+
+    const anchor_screen = rl.getWorldToScreen(gen_anchor, camera);
+    if (anchor_screen.x < -120.0 or anchor_screen.x > sw + 120.0 or
+        anchor_screen.y < -120.0 or anchor_screen.y > sh + 120.0)
+    {
+        return null;
+    }
+
+    const gen_panel_w: f32 = 270.0;
+    const gen_panel_h: f32 = 215.0;
+
+    var cx = anchor_screen.x - gen_panel_w / 2.0;
+    var cy = anchor_screen.y - gen_panel_h - 14.0;
+
+    if (cy < 52.0) {
+        cy = anchor_screen.y + 22.0;
+    }
+
+    cx = std.math.clamp(cx, 16.0, sw - gen_panel_w - 16.0);
+    cy = std.math.clamp(cy, 52.0, sh - gen_panel_h - 36.0);
+
+    return rl.Rectangle.init(cx, cy, gen_panel_w, gen_panel_h);
+}
+
 fn computePileUIBounds(r: Resource, camera: rl.Camera3D, selected: ?Resource, sw: f32, sh: f32) PileUIBounds {
     const p = r.position();
+    const anchor = rl.Vector3{ .x = p.x, .y = PILE_LABEL_HEIGHT_OFFSET, .z = p.z };
+    const in_front = isPointInFrontOfCamera(anchor, camera);
     const base_screen = rl.getWorldToScreen(.{ .x = p.x, .y = 0.5, .z = p.z }, camera);
-    const badge_screen = rl.getWorldToScreen(.{ .x = p.x, .y = PILE_LABEL_HEIGHT_OFFSET, .z = p.z }, camera);
+    const badge_screen = rl.getWorldToScreen(anchor, camera);
 
-    const on_screen = badge_screen.x >= -120 and badge_screen.x <= sw + 120 and
+    const on_screen = in_front and badge_screen.x >= -120 and badge_screen.x <= sw + 120 and
         badge_screen.y >= -120 and badge_screen.y <= sh + 120;
 
     const badge_w: f32 = 175.0;
@@ -1174,12 +1324,14 @@ fn computeCachedUI(camera: rl.Camera3D, selected: ?Resource) CachedSceneUI {
         res.piles[@intFromEnum(r)] = computePileUIBounds(r, camera, selected, sw, sh);
     }
 
+    const gen_anchor = rl.Vector3{ .x = 0.0, .y = 12.0, .z = 0.0 };
+    const gen_in_front = isPointInFrontOfCamera(gen_anchor, camera);
     const gen_base_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 2.0, .z = 0.0 }, camera);
     res.gen_base_screen = gen_base_screen;
-    res.gen_base_on_screen = gen_base_screen.x >= -100 and gen_base_screen.x <= sw + 100 and
+    res.gen_base_on_screen = gen_in_front and gen_base_screen.x >= -100 and gen_base_screen.x <= sw + 100 and
         gen_base_screen.y >= -100 and gen_base_screen.y <= sh + 100;
 
-    const gen_label_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 12.0, .z = 0.0 }, camera);
+    const gen_label_screen = rl.getWorldToScreen(gen_anchor, camera);
     res.gen_label_screen = gen_label_screen;
     const label_w: f32 = 190.0;
     const label_h: f32 = 28.0;
@@ -1189,7 +1341,7 @@ fn computeCachedUI(camera: rl.Camera3D, selected: ?Resource) CachedSceneUI {
         label_w,
         label_h,
     );
-    res.gen_label_on_screen = gen_label_screen.x > 30 and gen_label_screen.x < sw - 30 and
+    res.gen_label_on_screen = gen_in_front and gen_label_screen.x > 30 and gen_label_screen.x < sw - 30 and
         gen_label_screen.y > 45 and gen_label_screen.y < sh - 35;
 
     return res;
@@ -1225,7 +1377,7 @@ fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, ui: PileUIBounds, r
 
 fn isMouseOverGeneratorTarget(mouse_pos: rl.Vector2, cached: CachedSceneUI, ray: rl.Ray) bool {
     // 1. Hovering the floating badge of the Heat Generator (height ~12.0)
-    if (cached.gen_label_on_screen and rl.checkCollisionPointRec(mouse_pos, cached.gen_label_rect)) {
+    if (!selected_generator and cached.gen_label_on_screen and rl.checkCollisionPointRec(mouse_pos, cached.gen_label_rect)) {
         return true;
     }
 
@@ -1433,17 +1585,29 @@ pub fn main() !void {
                 }
             }
 
-            // Keyboard shortcuts to assign/recall workers when a Greenhouse is selected:
+            // Keyboard shortcuts to assign/recall workers when a Greenhouse or Lab is selected:
             if (selected_building) |s_bid| {
-                if (s_bid < buildings_count and buildings[s_bid].btype == .greenhouse and buildings[s_bid].state == .completed) {
-                    if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
-                        assignGreenhouseWorkers(s_bid, 1);
-                    } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
-                        assignGreenhouseWorkers(s_bid, -1);
-                    } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
-                        assignGreenhouseWorkers(s_bid, -buildings[s_bid].assigned_workers);
-                    } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
-                        assignGreenhouseWorkers(s_bid, GREENHOUSE_CAPACITY);
+                if (s_bid < buildings_count and buildings[s_bid].state == .completed) {
+                    if (buildings[s_bid].btype == .greenhouse) {
+                        if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                            assignGreenhouseWorkers(s_bid, 1);
+                        } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                            assignGreenhouseWorkers(s_bid, -1);
+                        } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                            assignGreenhouseWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                        } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                            assignGreenhouseWorkers(s_bid, GREENHOUSE_CAPACITY);
+                        }
+                    } else if (buildings[s_bid].btype == .lab) {
+                        if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                            assignLabWorkers(s_bid, 1);
+                        } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                            assignLabWorkers(s_bid, -1);
+                        } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                            assignLabWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                        } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                            assignLabWorkers(s_bid, LAB_CAPACITY);
+                        }
                     }
                 }
             }
@@ -1468,21 +1632,21 @@ pub fn main() !void {
             const in_build_strip = build_menu_open and mouse_pos.y >= strip_y and mouse_pos.y <= sh_f;
             const in_research_strip = research_menu_open and mouse_pos.y >= strip_y and mouse_pos.y <= sh_f;
 
-            const gen_dialog_w: f32 = 270.0;
-            const gen_dialog_h: f32 = 220.0;
-            const gen_dialog_x: f32 = sw_f - gen_dialog_w - 16.0;
-            const gen_dialog_y: f32 = 46.0 + 14.0;
-            const in_generator_dialog = selected_generator and
-                mouse_pos.x >= gen_dialog_x and mouse_pos.x <= gen_dialog_x + gen_dialog_w and
-                mouse_pos.y >= gen_dialog_y and mouse_pos.y <= gen_dialog_y + gen_dialog_h;
+            var in_generator_dialog = false;
+            if (selected_generator) {
+                if (getGeneratorDialogRect(camera, sw_f, sh_f)) |g_rect| {
+                    in_generator_dialog = rl.checkCollisionPointRec(mouse_pos, g_rect);
+                }
+            }
 
-            const bldg_dialog_w: f32 = 250.0;
-            const bldg_dialog_h: f32 = 188.0;
-            const bldg_dialog_x: f32 = sw_f - bldg_dialog_w - 16.0;
-            const bldg_dialog_y: f32 = 46.0 + 14.0;
-            const in_building_dialog = (selected_building != null) and
-                mouse_pos.x >= bldg_dialog_x and mouse_pos.x <= bldg_dialog_x + bldg_dialog_w and
-                mouse_pos.y >= bldg_dialog_y and mouse_pos.y <= bldg_dialog_y + bldg_dialog_h;
+            var in_building_dialog = false;
+            if (selected_building) |sbid| {
+                if (sbid < buildings_count) {
+                    if (getBuildingDialogRect(buildings[sbid], camera, sw_f, sh_f)) |b_rect| {
+                        in_building_dialog = rl.checkCollisionPointRec(mouse_pos, b_rect);
+                    }
+                }
+            }
 
             // Precompute scene 2D projections ONCE per frame
             const cached_ui = computeCachedUI(camera, selected_resource);
@@ -1546,6 +1710,14 @@ pub fn main() !void {
                     const hit = rl.getRayCollisionBox(ray, box);
                     if (hit.hit) {
                         hovered_building = b.id;
+                    }
+                    // Also check collision against floating badge for completed Greenhouse & Lab (when not selected)
+                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab)) {
+                        const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
+                        const badge_rect = rl.Rectangle.init(screen_pos.x - 175.0 / 2.0, screen_pos.y - 28.0 / 2.0, 175.0, 28.0);
+                        if (rl.checkCollisionPointRec(mouse_pos, badge_rect)) {
+                            hovered_building = b.id;
+                        }
                     }
                 }
             }
@@ -1730,10 +1902,12 @@ pub fn main() !void {
                 fuel_warning_timer -= dt;
             }
 
-            // Research progression
+            // Research progression (scales with total assigned lab workers)
             if (greenhouses_research_state == .researching) {
-                if (hasCompletedLab()) {
-                    greenhouses_research_progress += dt;
+                const lab_workers = getTotalLabWorkers();
+                if (lab_workers > 0) {
+                    const speed = @as(f32, @floatFromInt(lab_workers)) / @as(f32, @floatFromInt(LAB_CAPACITY));
+                    greenhouses_research_progress += speed * dt;
                     if (greenhouses_research_progress >= GREENHOUSES_RESEARCH_DURATION) {
                         greenhouses_research_progress = GREENHOUSES_RESEARCH_DURATION;
                         greenhouses_research_state = .completed;
@@ -1808,9 +1982,6 @@ pub fn main() !void {
                             b.progress = 1.0;
                             b.state = .completed;
                             b.active_builders = 0;
-                            if (b.btype == .greenhouse) {
-                                assignGreenhouseWorkers(b_idx, GREENHOUSE_CAPACITY);
-                            }
                         }
                     }
                     b_idx += 1;
@@ -2363,7 +2534,7 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
 
 fn drawWorldLabels(cached: CachedSceneUI) void {
     // 1. Heat Generator floating label
-    if (cached.gen_label_on_screen) {
+    if (cached.gen_label_on_screen and !selected_generator) {
         const text = if (generator_active) "HEAT GENERATOR [ONLINE]" else "HEAT GENERATOR [OFFLINE]";
         const tw = rl.measureText(text, 11);
         const bx = @as(i32, @intFromFloat(cached.gen_label_screen.x)) - @divTrunc(tw, 2);
@@ -2563,6 +2734,10 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
     const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
     for (buildings[0..buildings_count]) |b| {
+        // If this building is currently selected, its full management station dialog
+        // is drawn directly on top of it, so skip the small floating badge or progress card.
+        if (selected_building == b.id) continue;
+
         if (b.state == .constructing or b.state == .dismantling) {
             const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.6, .z = b.pos.z }, camera);
             if (screen_pos.x > -50 and screen_pos.x < sw + 50 and screen_pos.y > -50 and screen_pos.y < sh + 50) {
@@ -2660,20 +2835,94 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     );
                 }
             }
+        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab)) {
+            const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
+            if (screen_pos.x > -100 and screen_pos.x < sw + 100 and screen_pos.y > -100 and screen_pos.y < sh + 100) {
+                const badge_w: f32 = 175.0;
+                const badge_h: f32 = 28.0;
+                const br = rl.Rectangle.init(
+                    screen_pos.x - badge_w / 2.0,
+                    screen_pos.y - badge_h / 2.0,
+                    badge_w,
+                    badge_h,
+                );
+
+                const is_selected = (selected_building == b.id);
+                const is_hovered = (hovered_building == b.id);
+
+                const is_gh = (b.btype == .greenhouse);
+                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else LAB_CAPACITY;
+                const assigned = b.assigned_workers;
+
+                const primary_color = if (is_gh) rl.Color.init(60, 195, 125, 255) else rl.Color.init(100, 215, 255, 255);
+                const bg_color = if (is_selected)
+                    rl.Color.init(35, 48, 65, 250)
+                else if (is_hovered)
+                    rl.Color.init(32, 40, 52, 245)
+                else
+                    rl.Color.init(18, 22, 28, 230);
+
+                const border_color = if (is_selected or is_hovered)
+                    rl.Color.init(255, 215, 80, 255)
+                else
+                    primary_color;
+
+                rl.drawRectangleRounded(br, 0.25, 6, bg_color);
+                rl.drawRectangleRoundedLinesEx(br, 0.25, 6, if (is_selected or is_hovered) 2.0 else 1.2, border_color);
+
+                // Building color icon pill
+                rl.drawRectangle(@intFromFloat(br.x + 8), @intFromFloat(br.y + 7), 12, 14, primary_color);
+
+                // Building Name
+                const name_text = if (is_gh) "Greenhouse" else "Lab";
+                rl.drawText(
+                    name_text,
+                    @intFromFloat(br.x + 25),
+                    @intFromFloat(br.y + 4),
+                    11,
+                    if (is_hovered or is_selected) rl.Color.init(255, 225, 120, 255) else rl.Color.white,
+                );
+
+                // Worker count: "X/10 workers"
+                const count_text = fmt("{d}/{d} workers", .{ assigned, max_cap });
+                rl.drawText(
+                    count_text,
+                    @intFromFloat(br.x + 25),
+                    @intFromFloat(br.y + 15),
+                    10,
+                    if (assigned >= max_cap)
+                        rl.Color.init(245, 205, 70, 255)
+                    else if (assigned > 0)
+                        rl.Color.init(120, 230, 140, 255)
+                    else
+                        rl.Color.init(150, 165, 180, 255),
+                );
+
+                // Right manage prompt
+                rl.drawText(
+                    if (is_selected) "OPEN" else if (is_hovered) "CLICK" else "MANAGE",
+                    @intFromFloat(br.x + br.width - 48),
+                    @intFromFloat(br.y + 9),
+                    9,
+                    if (is_selected) rl.Color.init(245, 205, 70, 255) else if (is_hovered) rl.Color.init(255, 215, 80, 255) else rl.Color.init(130, 150, 175, 255),
+                );
+            }
         }
     }
 }
 
-fn drawBuildingDialog(sw_f: f32) void {
+fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
     if (selected_building) |bid| {
         if (bid < buildings_count) {
             const b = buildings[bid];
+            const rect = getBuildingDialogRect(b, camera, sw_f, sh_f) orelse return;
+            const panel_x: f32 = rect.x;
+            const panel_y: f32 = rect.y;
+            const panel_w: f32 = rect.width;
+            const panel_h: f32 = rect.height;
+
             const is_lab = (b.btype == .lab);
             const is_gh = (b.btype == .greenhouse);
-            const panel_w: f32 = 250.0;
-            const panel_h: f32 = if (is_gh and b.state == .completed) 226.0 else 188.0;
-            const panel_x: f32 = sw_f - panel_w - 16.0;
-            const panel_y: f32 = 46.0 + 14.0;
 
             const border_color = if (b.state == .dismantling)
                 COLOR_DISMANTLE_SCAFFOLD
@@ -2683,6 +2932,17 @@ fn drawBuildingDialog(sw_f: f32) void {
                 rl.Color.init(65, 150, 195, 255)
             else
                 rl.Color.init(184, 138, 72, 255);
+
+            // Connecting line from card to building roof anchor
+            const anchor_screen = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
+            const card_connect_y = if (rect.y < anchor_screen.y) rect.y + rect.height else rect.y;
+            const card_connect_x = std.math.clamp(anchor_screen.x, rect.x + 16.0, rect.x + rect.width - 16.0);
+            rl.drawLineEx(
+                .{ .x = card_connect_x, .y = card_connect_y },
+                .{ .x = anchor_screen.x, .y = anchor_screen.y },
+                2.0,
+                border_color,
+            );
 
             rl.drawRectangleRounded(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, rl.Color.init(20, 24, 32, 245));
             rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, border_color);
@@ -2717,7 +2977,7 @@ fn drawBuildingDialog(sw_f: f32) void {
             // Status & Info rows
             if (b.state == .completed) {
                 if (is_gh) {
-                    const status_str = if (b.assigned_workers >= 10) "STATUS: FULL PRODUCTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL PRODUCTION" else "STATUS: UNSTAFFED (IDLE)";
+                    const status_str = if (b.assigned_workers >= GREENHOUSE_CAPACITY) "STATUS: FULL PRODUCTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL PRODUCTION" else "STATUS: UNSTAFFED (IDLE)";
                     rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 230, 140, 255) else rl.Color.init(245, 195, 65, 255));
 
                     const staff_str = fmt("Staff: {d} / {d} Workers", .{ b.assigned_workers, GREENHOUSE_CAPACITY });
@@ -2763,12 +3023,62 @@ fn drawBuildingDialog(sw_f: f32) void {
                         }
                     }
                     rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
-                } else {
-                    rl.drawText(if (is_lab) "STATUS: OPERATIONAL" else "STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
-                    const cap_str = if (is_lab)
-                        fmt("Staff Capacity: {d} Researchers", .{b.btype.capacity()})
+                } else if (is_lab) {
+                    const status_str = if (b.assigned_workers >= LAB_CAPACITY)
+                        "STATUS: FULL RESEARCH"
+                    else if (b.assigned_workers > 0)
+                        "STATUS: RESEARCHING"
                     else
-                        fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
+                        "STATUS: UNSTAFFED (HALTED)";
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 225, 255, 255) else rl.Color.init(245, 195, 65, 255));
+
+                    const staff_str = fmt("Staff: {d} / {d} Researchers", .{ b.assigned_workers, LAB_CAPACITY });
+                    rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
+
+                    const speed_pct = @as(i32, @intCast(b.assigned_workers)) * 10;
+                    const speed_str = fmt("Research Speed: {d}%", .{speed_pct});
+                    rl.drawText(speed_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, if (b.assigned_workers > 0) rl.Color.init(130, 230, 255, 255) else rl.Color.init(255, 120, 100, 255));
+
+                    // Worker control buttons: None, -1, +1, Max
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 104, 48, 22), "None")) {
+                            assignLabWorkers(bid, -b.assigned_workers);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 68, panel_y + 104, 38, 22), "-1")) {
+                            assignLabWorkers(bid, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 112, panel_y + 104, 38, 22), "+1")) {
+                            assignLabWorkers(bid, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 156, panel_y + 104, 48, 22), "Max")) {
+                            assignLabWorkers(bid, LAB_CAPACITY);
+                        }
+                    }
+
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
+                            if (b.assigned_workers > 0) {
+                                assignLabWorkers(bid, -b.assigned_workers);
+                            }
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                } else {
+                    rl.drawText("STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
+                    const cap_str = fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
                     _ = rl.drawText(cap_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
                     if (b.is_warm) {
                         rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, COLOR_CITIZEN_WARM);
@@ -3334,12 +3644,37 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 rl.drawRectangleRoundedLinesEx(btn_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(90, 210, 130, 255) else rl.Color.init(180, 60, 60, 255));
                 rl.drawText(if (can_afford) "Click to Research (20 Wood)" else "Need 20 Wood to Research", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, if (can_afford) rl.Color.white else rl.Color.init(255, 130, 130, 255));
             } else if (greenhouses_research_state == .researching) {
+                const total_researchers = getTotalLabWorkers();
                 const pct = greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION;
-                const rem = @max(0, @as(i32, @intFromFloat(GREENHOUSES_RESEARCH_DURATION - greenhouses_research_progress)));
-                const rem_min = @divTrunc(rem, 60);
-                const rem_sec = @rem(rem, 60);
+                if (total_researchers > 0) {
+                    const speed_mult = @as(f32, @floatFromInt(total_researchers)) / @as(f32, @floatFromInt(LAB_CAPACITY));
+                    const rem_sec_f = (GREENHOUSES_RESEARCH_DURATION - greenhouses_research_progress) / speed_mult;
+                    const rem = @max(0, @as(i32, @intFromFloat(rem_sec_f)));
+                    const rem_min = @divTrunc(rem, 60);
+                    const rem_sec = @rem(rem, 60);
 
-                _ = rl.drawText(fmt("Researching: {d}% | {d}m {d:0>2}s remaining", .{ @as(i32, @intFromFloat(pct * 100.0)), rem_min, rem_sec }), @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(100, 225, 255, 255));
+                    _ = rl.drawText(
+                        fmt("Researching: {d}% | {d}m {d:0>2}s left ({d} Staff, {d}%)", .{
+                            @as(i32, @intFromFloat(pct * 100.0)),
+                            rem_min,
+                            rem_sec,
+                            total_researchers,
+                            @as(i32, @intFromFloat(speed_mult * 100.0)),
+                        }),
+                        @intFromFloat(card_x + 48),
+                        @intFromFloat(card_y + 46),
+                        11,
+                        rl.Color.init(100, 225, 255, 255),
+                    );
+                } else {
+                    _ = rl.drawText(
+                        fmt("PAUSED: 0 Staff in Lab (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
+                        @intFromFloat(card_x + 48),
+                        @intFromFloat(card_y + 46),
+                        11,
+                        rl.Color.init(255, 120, 100, 255),
+                    );
+                }
 
                 // Progress Bar
                 const bar_w: f32 = 220.0;
@@ -3348,7 +3683,7 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 const bar_y: f32 = card_y + 66;
                 rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
                 rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
-                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, rl.Color.init(60, 210, 140, 255));
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, if (total_researchers > 0) rl.Color.init(60, 210, 140, 255) else rl.Color.init(180, 80, 70, 255));
             } else if (greenhouses_research_state == .completed) {
                 rl.drawText("Unlocks 2x4 Greenhouse building", @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(180, 215, 190, 255));
 
@@ -3453,11 +3788,12 @@ fn drawPopulationPopover(x: f32, y: f32) void {
             greenhouse_workers += b.assigned_workers;
         }
     }
-    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers;
+    const lab_workers = getTotalLabWorkers();
+    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + lab_workers;
     const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
 
     const pop_w: f32 = 264.0;
-    const pop_h: f32 = 160.0;
+    const pop_h: f32 = 174.0;
 
     // Subtle drop shadow
     rl.drawRectangleRounded(
@@ -3496,33 +3832,40 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     );
 
     // Working Citizens row
-    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 45.0), 4.0, rl.Color.init(80, 220, 130, 255));
-    rl.drawText("Working Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 38.0), 13, rl.Color.init(220, 230, 240, 255));
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 44.0), 4.0, rl.Color.init(80, 220, 130, 255));
+    rl.drawText("Working Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 37.0), 13, rl.Color.init(220, 230, 240, 255));
     const work_val = fmt("{d}", .{total_working});
     const work_val_w = rl.measureText(work_val, 13);
-    rl.drawText(work_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(work_val_w))), @intFromFloat(y + 38.0), 13, rl.Color.init(100, 235, 140, 255));
+    rl.drawText(work_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(work_val_w))), @intFromFloat(y + 37.0), 13, rl.Color.init(100, 235, 140, 255));
 
-    // Breakdown details
+    // Breakdown details - 2 rows
     rl.drawText(
-        fmt("  Gatherers: {d} | Builders: {d} | Farmers: {d}", .{ resource_workers, construction_workers, greenhouse_workers }),
+        fmt("  Gatherers: {d}  |  Builders: {d}", .{ resource_workers, construction_workers }),
         @intFromFloat(x + 20.0),
-        @intFromFloat(y + 58.0),
+        @intFromFloat(y + 55.0),
+        11,
+        rl.Color.init(140, 165, 190, 255),
+    );
+    rl.drawText(
+        fmt("  Farmers: {d}    |  Researchers: {d}", .{ greenhouse_workers, lab_workers }),
+        @intFromFloat(x + 20.0),
+        @intFromFloat(y + 69.0),
         11,
         rl.Color.init(140, 165, 190, 255),
     );
 
     // Idle Citizens row
-    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 85.0), 4.0, rl.Color.init(245, 185, 65, 255));
-    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 78.0), 13, rl.Color.init(220, 230, 240, 255));
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 96.0), 4.0, rl.Color.init(245, 185, 65, 255));
+    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 89.0), 13, rl.Color.init(220, 230, 240, 255));
     const idle_val = fmt("{d}", .{total_idle});
     const idle_val_w = rl.measureText(idle_val, 13);
-    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 78.0), 13, rl.Color.init(255, 215, 80, 255));
+    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 89.0), 13, rl.Color.init(255, 215, 80, 255));
 
     // Idle explanation
     rl.drawText(
         "  Available for new tasks & building",
         @intFromFloat(x + 24.0),
-        @intFromFloat(y + 98.0),
+        @intFromFloat(y + 109.0),
         11,
         rl.Color.init(140, 165, 190, 255),
     );
@@ -3530,17 +3873,17 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     // Separator line
     rl.drawLine(
         @intFromFloat(x + 12.0),
-        @intFromFloat(y + 118.0),
+        @intFromFloat(y + 129.0),
         @intFromFloat(x + pop_w - 12.0),
-        @intFromFloat(y + 118.0),
+        @intFromFloat(y + 129.0),
         rl.Color.init(45, 55, 70, 255),
     );
 
     // Total row
-    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 129.0), 12, rl.Color.init(180, 195, 210, 255));
+    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 140.0), 12, rl.Color.init(180, 195, 210, 255));
     const tot_val = fmt("{d}", .{total_citizens});
     const tot_val_w = rl.measureText(tot_val, 12);
-    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 129.0), 12, rl.Color.white);
+    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 140.0), 12, rl.Color.white);
 }
 
 fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.Camera3D, mouse_pos: rl.Vector2, placement_check: PlacementCheck) void {
@@ -3747,123 +4090,140 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
     // HEAT GENERATOR DIALOG
     // ------------------------------------------------------------------------
     if (selected_generator) {
-        const gen_panel_w: f32 = 270.0;
-        const gen_panel_h: f32 = 215.0;
-        const gen_panel_x: f32 = @as(f32, @floatFromInt(screen_w)) - gen_panel_w - 16.0;
-        const gen_panel_y: f32 = top_bar_height + 14.0;
+        const sw_f = @as(f32, @floatFromInt(screen_w));
+        const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
+        if (getGeneratorDialogRect(camera, sw_f, sh_f)) |rect| {
+            const gen_panel_w: f32 = rect.width;
+            const gen_panel_h: f32 = rect.height;
+            const gen_panel_x: f32 = rect.x;
+            const gen_panel_y: f32 = rect.y;
 
-        rl.drawRectangleRounded(
-            rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
-            0.04,
-            8,
-            rl.Color.init(20, 24, 32, 245),
-        );
-        rl.drawRectangleRoundedLinesEx(
-            rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
-            0.04,
-            8,
-            2.0,
-            if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(245, 195, 65, 255),
-        );
+            const gen_border_color = if (generator_active) COLOR_GENERATOR_LIT else rl.Color.init(245, 195, 65, 255);
 
-        // Header
-        rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 12), 12, 14, COLOR_GENERATOR_LIT);
-        rl.drawText("THE HEAT GENERATOR", @intFromFloat(gen_panel_x + 32), @intFromFloat(gen_panel_y + 10), 16, rl.Color.init(245, 205, 70, 255));
+            // Connecting line from card to generator chimney top
+            const anchor_screen = rl.getWorldToScreen(.{ .x = 0.0, .y = 11.0, .z = 0.0 }, camera);
+            const card_connect_y = if (rect.y < anchor_screen.y) rect.y + rect.height else rect.y;
+            const card_connect_x = std.math.clamp(anchor_screen.x, rect.x + 16.0, rect.x + rect.width - 16.0);
+            rl.drawLineEx(
+                .{ .x = card_connect_x, .y = card_connect_y },
+                .{ .x = anchor_screen.x, .y = anchor_screen.y },
+                2.0,
+                gen_border_color,
+            );
 
-        // Close button [x]
-        if (!is_paused) {
-            if (rg.button(rl.Rectangle.init(gen_panel_x + gen_panel_w - 28, gen_panel_y + 8, 20, 20), "x")) {
-                selected_generator = false;
+            rl.drawRectangleRounded(
+                rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
+                0.04,
+                8,
+                rl.Color.init(20, 24, 32, 245),
+            );
+            rl.drawRectangleRoundedLinesEx(
+                rl.Rectangle.init(gen_panel_x, gen_panel_y, gen_panel_w, gen_panel_h),
+                0.04,
+                8,
+                2.0,
+                gen_border_color,
+            );
+
+            // Header
+            rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 12), 12, 14, COLOR_GENERATOR_LIT);
+            rl.drawText("THE HEAT GENERATOR", @intFromFloat(gen_panel_x + 32), @intFromFloat(gen_panel_y + 10), 16, rl.Color.init(245, 205, 70, 255));
+
+            // Close button [x]
+            if (!is_paused) {
+                if (rg.button(rl.Rectangle.init(gen_panel_x + gen_panel_w - 28, gen_panel_y + 8, 20, 20), "x")) {
+                    selected_generator = false;
+                }
             }
-        }
 
-        rl.drawText("Central Thermal Facility | 4x4 Grid", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
+            rl.drawText("Central Thermal Facility | 4x4 Grid", @intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
-        if (generator_active) {
-            rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, COLOR_GENERATOR_LIT);
-            rl.drawText("ONLINE - HEATING ACTIVE", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, COLOR_GENERATOR_LIT);
-        } else {
-            rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, rl.Color.init(120, 125, 135, 255));
-            rl.drawText("OFFLINE - COLD", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, rl.Color.init(150, 160, 170, 255));
-        }
-
-        const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
-        const btn_label = if (generator_active)
-            "TURN HEAT GENERATOR OFF"
-        else if (coal_amount > 0.0)
-            "TURN HEAT GENERATOR ON"
-        else
-            "IGNITE (NO COAL!)";
-
-        if (!is_paused) {
-            if (rg.button(rl.Rectangle.init(gen_panel_x + 14, gen_panel_y + 68, gen_panel_w - 28, 36), btn_label)) {
-                tryToggleGenerator();
+            if (generator_active) {
+                rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, COLOR_GENERATOR_LIT);
+                rl.drawText("ONLINE - HEATING ACTIVE", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, COLOR_GENERATOR_LIT);
+            } else {
+                rl.drawRectangle(@intFromFloat(gen_panel_x + 14), @intFromFloat(gen_panel_y + 48), 10, 10, rl.Color.init(120, 125, 135, 255));
+                rl.drawText("OFFLINE - COLD", @intFromFloat(gen_panel_x + 30), @intFromFloat(gen_panel_y + 46), 12, rl.Color.init(150, 160, 170, 255));
             }
-        }
 
-        _ = rl.drawText(
-            fmt("Heat Radius: {d:.1} m", .{GENERATOR_HEAT_RADIUS}),
-            @intFromFloat(gen_panel_x + 14),
-            @intFromFloat(gen_panel_y + 114),
-            13,
-            rl.Color.init(210, 215, 225, 255),
-        );
+            const coal_amount = stockpiles[@intFromEnum(Resource.coal)];
+            const btn_label = if (generator_active)
+                "TURN HEAT GENERATOR OFF"
+            else if (coal_amount > 0.0)
+                "TURN HEAT GENERATOR ON"
+            else
+                "IGNITE (NO COAL!)";
 
-        _ = rl.drawText(
-            fmt("Citizens Protected: {d} / {d}", .{ warm_count, total_citizens }),
-            @intFromFloat(gen_panel_x + 14),
-            @intFromFloat(gen_panel_y + 134),
-            13,
-            if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
-        );
+            if (!is_paused) {
+                if (rg.button(rl.Rectangle.init(gen_panel_x + 14, gen_panel_y + 68, gen_panel_w - 28, 36), btn_label)) {
+                    tryToggleGenerator();
+                }
+            }
 
-        _ = rl.drawText(
-            fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
-            @intFromFloat(gen_panel_x + 14),
-            @intFromFloat(gen_panel_y + 154),
-            13,
-            if (coal_amount > 10.0) rl.Color.white else rl.Color.init(255, 120, 100, 255),
-        );
+            _ = rl.drawText(
+                fmt("Heat Radius: {d:.1} m", .{GENERATOR_HEAT_RADIUS}),
+                @intFromFloat(gen_panel_x + 14),
+                @intFromFloat(gen_panel_y + 114),
+                13,
+                rl.Color.init(210, 215, 225, 255),
+            );
 
-        if (generator_active) {
-            const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
-            const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
-            if (net_coal < -0.01) {
-                const secs_left = @max(0.0, coal_amount / (-net_coal));
-                const total_s = @as(i32, @intFromFloat(secs_left));
-                const mins = @divTrunc(total_s, 60);
-                const secs = @rem(total_s, 60);
-                _ = rl.drawText(
-                    fmt("Fuel Depletes In: ~{d}m {d:0>2}s", .{ mins, secs }),
-                    @intFromFloat(gen_panel_x + 14),
-                    @intFromFloat(gen_panel_y + 174),
-                    12,
-                    rl.Color.init(255, 175, 70, 255),
-                );
+            _ = rl.drawText(
+                fmt("Citizens Protected: {d} / {d}", .{ warm_count, total_citizens }),
+                @intFromFloat(gen_panel_x + 14),
+                @intFromFloat(gen_panel_y + 134),
+                13,
+                if (generator_active) COLOR_CITIZEN_WARM else rl.Color.init(140, 150, 165, 255),
+            );
+
+            _ = rl.drawText(
+                fmt("Coal Reserve: {d} coal", .{@as(i32, @intFromFloat(coal_amount))}),
+                @intFromFloat(gen_panel_x + 14),
+                @intFromFloat(gen_panel_y + 154),
+                13,
+                if (coal_amount > 10.0) rl.Color.white else rl.Color.init(255, 120, 100, 255),
+            );
+
+            if (generator_active) {
+                const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
+                const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
+                if (net_coal < -0.01) {
+                    const secs_left = @max(0.0, coal_amount / (-net_coal));
+                    const total_s = @as(i32, @intFromFloat(secs_left));
+                    const mins = @divTrunc(total_s, 60);
+                    const secs = @rem(total_s, 60);
+                    _ = rl.drawText(
+                        fmt("Fuel Depletes In: ~{d}m {d:0>2}s", .{ mins, secs }),
+                        @intFromFloat(gen_panel_x + 14),
+                        @intFromFloat(gen_panel_y + 174),
+                        12,
+                        rl.Color.init(255, 175, 70, 255),
+                    );
+                } else {
+                    _ = rl.drawText(
+                        "Fuel Sustainable (Surplus)",
+                        @intFromFloat(gen_panel_x + 14),
+                        @intFromFloat(gen_panel_y + 174),
+                        12,
+                        rl.Color.init(120, 230, 140, 255),
+                    );
+                }
             } else {
                 _ = rl.drawText(
-                    "Fuel Sustainable (Surplus)",
+                    fmt("Burn Rate: {d:.1} coal/sec", .{GENERATOR_COAL_DRAIN_PER_SEC}),
                     @intFromFloat(gen_panel_x + 14),
                     @intFromFloat(gen_panel_y + 174),
                     12,
-                    rl.Color.init(120, 230, 140, 255),
+                    rl.Color.init(150, 170, 190, 255),
                 );
             }
-        } else {
-            _ = rl.drawText(
-                fmt("Burn Rate: {d:.1} coal/sec", .{GENERATOR_COAL_DRAIN_PER_SEC}),
-                @intFromFloat(gen_panel_x + 14),
-                @intFromFloat(gen_panel_y + 174),
-                12,
-                rl.Color.init(150, 170, 190, 255),
-            );
         }
     }
 
     // ------------------------------------------------------------------------
     // BUILDING INSPECTION DIALOG
     // ------------------------------------------------------------------------
-    drawBuildingDialog(@as(f32, @floatFromInt(screen_w)));
+    drawBuildingDialog(camera, @as(f32, @floatFromInt(screen_w)), @as(f32, @floatFromInt(rl.getScreenHeight())));
 
     // ------------------------------------------------------------------------
     // BUILD & RESEARCH UI & CONTROLS BUTTON
