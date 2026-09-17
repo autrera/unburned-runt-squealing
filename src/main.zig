@@ -90,6 +90,11 @@ pub var LAB_GRID_WIDTH: i32 = 3;
 /// Length in grid squares for a Science Lab (3 squares = 6.0 world units)
 pub var LAB_GRID_LENGTH: i32 = 3;
 
+/// Width in grid squares for a Greenhouse (2 squares = 4.0 world units)
+pub var GREENHOUSE_GRID_WIDTH: i32 = 2;
+/// Length in grid squares for a Greenhouse (4 squares = 8.0 world units)
+pub var GREENHOUSE_GRID_LENGTH: i32 = 4;
+
 /// Width in grid squares for the Heat Generator (4 squares = 8.0 world units)
 pub var GENERATOR_GRID_WIDTH: i32 = 4;
 /// Length in grid squares for the Heat Generator (4 squares = 8.0 world units)
@@ -142,6 +147,22 @@ pub var LAB_MAX_BUILDERS: i32 = 10;
 /// Clearance collision radius around a Lab in world units
 pub var LAB_COLLISION_RADIUS: f32 = 5.2;
 
+/// Wood cost required to construct one Greenhouse
+pub var GREENHOUSE_WOOD_COST: f32 = 20.0;
+/// Worker capacity for a completed Greenhouse
+pub var GREENHOUSE_CAPACITY: i32 = 10;
+/// Base construction duration in seconds when built by maximum workers
+pub var GREENHOUSE_BASE_BUILD_TIME: f32 = 25.0;
+/// Maximum number of idle workers that can simultaneously construct a single Greenhouse
+pub var GREENHOUSE_MAX_BUILDERS: i32 = 10;
+/// Clearance collision radius around a Greenhouse in world units
+pub var GREENHOUSE_COLLISION_RADIUS: f32 = 4.8;
+
+/// Wood cost required to research Greenhouses in the Lab
+pub var GREENHOUSES_RESEARCH_WOOD_COST: f32 = 20.0;
+/// Research duration in seconds for Greenhouses (2 minutes = 120 seconds)
+pub var GREENHOUSES_RESEARCH_DURATION: f32 = 120.0;
+
 /// Maximum number of placed buildings in the settlement
 pub const MAX_BUILDINGS: usize = 128;
 
@@ -165,6 +186,10 @@ pub var COLOR_HOUSE_CHIMNEY: rl.Color = rl.Color.init(45, 38, 34, 255); // Brick
 pub var COLOR_LAB_WALLS: rl.Color = rl.Color.init(68, 76, 88, 255); // Industrial stone gray
 pub var COLOR_LAB_ROOF: rl.Color = rl.Color.init(42, 58, 72, 255); // Deep slate blue roof
 pub var COLOR_LAB_DOME: rl.Color = rl.Color.init(50, 175, 205, 255); // Cyan glass observatory dome
+pub var COLOR_GREENHOUSE_WALLS: rl.Color = rl.Color.init(45, 95, 80, 255); // Dark timber/bronze frame
+pub var COLOR_GREENHOUSE_GLASS: rl.Color = rl.Color.init(65, 185, 145, 190); // Translucent seafoam glass panels
+pub var COLOR_GREENHOUSE_ROOF: rl.Color = rl.Color.init(80, 205, 160, 220); // Pitched glass roof canopy
+pub var COLOR_GREENHOUSE_CROPS: rl.Color = rl.Color.init(75, 185, 90, 255); // Vibrant agricultural crops
 pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
 pub var COLOR_DISMANTLE_SCAFFOLD: rl.Color = rl.Color.init(205, 80, 60, 255); // Demolition/dismantling scaffolding frame
 pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
@@ -251,10 +276,11 @@ pub const CitizenRole = enum {
     gathering_wood,
     gathering_steel,
     gathering_food,
+    working_greenhouse,
 
     pub fn toResource(self: CitizenRole) ?Resource {
         return switch (self) {
-            .idle => null,
+            .idle, .working_greenhouse => null,
             .gathering_coal => .coal,
             .gathering_wood => .wood,
             .gathering_steel => .steel,
@@ -275,11 +301,13 @@ pub const CitizenRole = enum {
 pub const BuildingType = enum(usize) {
     house = 0,
     lab = 1,
+    greenhouse = 2,
 
     pub fn name(self: BuildingType) [:0]const u8 {
         return switch (self) {
             .house => "House",
             .lab => "Lab",
+            .greenhouse => "Greenhouse",
         };
     }
 
@@ -287,6 +315,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_WOOD_COST,
             .lab => LAB_WOOD_COST,
+            .greenhouse => GREENHOUSE_WOOD_COST,
         };
     }
 
@@ -294,6 +323,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_CAPACITY,
             .lab => LAB_CAPACITY,
+            .greenhouse => GREENHOUSE_CAPACITY,
         };
     }
 
@@ -301,6 +331,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_MAX_BUILDERS,
             .lab => LAB_MAX_BUILDERS,
+            .greenhouse => GREENHOUSE_MAX_BUILDERS,
         };
     }
 
@@ -308,6 +339,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_BASE_BUILD_TIME,
             .lab => LAB_BASE_BUILD_TIME,
+            .greenhouse => GREENHOUSE_BASE_BUILD_TIME,
         };
     }
 
@@ -315,6 +347,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_GRID_WIDTH,
             .lab => LAB_GRID_WIDTH,
+            .greenhouse => GREENHOUSE_GRID_WIDTH,
         };
     }
 
@@ -322,6 +355,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_GRID_LENGTH,
             .lab => LAB_GRID_LENGTH,
+            .greenhouse => GREENHOUSE_GRID_LENGTH,
         };
     }
 
@@ -329,6 +363,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house => HOUSE_COLLISION_RADIUS,
             .lab => LAB_COLLISION_RADIUS,
+            .greenhouse => GREENHOUSE_COLLISION_RADIUS,
         };
     }
 };
@@ -349,6 +384,7 @@ pub const Building = struct {
     progress: f32, // 0.0 to 1.0
     active_builders: i32,
     is_warm: bool,
+    assigned_workers: i32 = 0,
 };
 
 pub const GridCoord = struct {
@@ -358,7 +394,21 @@ pub const GridCoord = struct {
 
 pub const BuildTab = enum {
     people,
+    food,
     science,
+};
+
+pub const ResearchTab = enum {
+    technology,
+    food,
+    efficiency,
+    exploration,
+};
+
+pub const ResearchState = enum {
+    available,
+    researching,
+    completed,
 };
 
 pub const PlacementCheck = struct {
@@ -699,6 +749,9 @@ var should_quit: bool = false;
 var fuel_warning_timer: f32 = 0.0;
 
 var research_menu_open: bool = false;
+var active_research_tab: ResearchTab = .food;
+var greenhouses_research_state: ResearchState = .available;
+var greenhouses_research_progress: f32 = 0.0;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -713,8 +766,65 @@ fn hasCompletedLab() bool {
     return false;
 }
 
+fn assignGreenhouseWorkers(idx: usize, delta: i32) void {
+    if (idx >= buildings_count) return;
+    var b = &buildings[idx];
+    if (b.btype != .greenhouse or b.state != .completed) return;
+
+    if (delta > 0) {
+        const can_add = @min(delta, @as(i32, @intCast(citizen_mgr.getIdleCount())));
+        const space = GREENHOUSE_CAPACITY - b.assigned_workers;
+        const to_add = @min(can_add, space);
+        var added: i32 = 0;
+        while (added < to_add) : (added += 1) {
+            if (citizen_mgr.idle_count == 0) break;
+            citizen_mgr.idle_count -= 1;
+            const id = citizen_mgr.idle_ids[citizen_mgr.idle_count];
+            citizen_mgr.role[id] = .working_greenhouse;
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(1.5, 3.5);
+            citizen_mgr.target_x[id] = b.pos.x + @cos(angle) * dist;
+            citizen_mgr.target_z[id] = b.pos.z + @sin(angle) * dist;
+            citizen_mgr.wander_timer[id] = randomFloat(2.0, 5.0);
+            b.assigned_workers += 1;
+        }
+    } else if (delta < 0) {
+        const to_remove = @min(-delta, b.assigned_workers);
+        var removed: i32 = 0;
+        while (removed < to_remove) : (removed += 1) {
+            var closest_id: ?usize = null;
+            var min_dist_sq: f32 = std.math.floatMax(f32);
+            for (0..citizen_mgr.count) |i| {
+                if (citizen_mgr.role[i] == .working_greenhouse) {
+                    const dx = citizen_mgr.pos_x[i] - b.pos.x;
+                    const dz = citizen_mgr.pos_z[i] - b.pos.z;
+                    const d_sq = dx * dx + dz * dz;
+                    if (d_sq < min_dist_sq) {
+                        min_dist_sq = d_sq;
+                        closest_id = i;
+                    }
+                }
+            }
+            if (closest_id) |cid| {
+                citizen_mgr.role[cid] = .idle;
+                citizen_mgr.idle_ids[citizen_mgr.idle_count] = @intCast(cid);
+                citizen_mgr.idle_count += 1;
+                const tgt = pickTargetForRole(.idle);
+                citizen_mgr.target_x[cid] = tgt.x;
+                citizen_mgr.target_z[cid] = tgt.z;
+                b.assigned_workers -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn removeBuilding(idx: usize) void {
     if (idx >= buildings_count) return;
+    if (buildings[idx].btype == .greenhouse and buildings[idx].assigned_workers > 0) {
+        assignGreenhouseWorkers(idx, -buildings[idx].assigned_workers);
+    }
     var i = idx;
     while (i + 1 < buildings_count) : (i += 1) {
         buildings[i] = buildings[i + 1];
@@ -885,7 +995,27 @@ fn canPlaceBuildingAtGrid(gx: i32, gz: i32, btype: BuildingType) PlacementCheck 
 }
 
 fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
-    if (role.toResource()) |res| {
+    if (role == .working_greenhouse) {
+        for (buildings[0..buildings_count]) |b| {
+            if (b.btype == .greenhouse and b.state == .completed and b.assigned_workers > 0) {
+                const angle = randomFloat(0.0, std.math.pi * 2.0);
+                const dist = randomFloat(1.5, 3.5);
+                return .{
+                    .x = b.pos.x + @cos(angle) * dist,
+                    .y = 0.0,
+                    .z = b.pos.z + @sin(angle) * dist,
+                };
+            }
+        }
+        // Fallback to generator
+        const angle = randomFloat(0.0, std.math.pi * 2.0);
+        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+        return .{
+            .x = @cos(angle) * dist,
+            .y = 0.0,
+            .z = @sin(angle) * dist,
+        };
+    } else if (role.toResource()) |res| {
         const center = res.position();
         const angle = randomFloat(0.0, std.math.pi * 2.0);
         const dist = randomFloat(1.2, CITIZEN_WORK_RADIUS);
@@ -939,6 +1069,9 @@ fn initGame() void {
     build_menu_open = false;
     research_menu_open = false;
     active_build_tab = .people;
+    active_research_tab = .food;
+    greenhouses_research_state = .available;
+    greenhouses_research_progress = 0.0;
     placing_building = null;
     selected_building = null;
     hovered_building = null;
@@ -1300,6 +1433,21 @@ pub fn main() !void {
                 }
             }
 
+            // Keyboard shortcuts to assign/recall workers when a Greenhouse is selected:
+            if (selected_building) |s_bid| {
+                if (s_bid < buildings_count and buildings[s_bid].btype == .greenhouse and buildings[s_bid].state == .completed) {
+                    if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                        assignGreenhouseWorkers(s_bid, 1);
+                    } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                        assignGreenhouseWorkers(s_bid, -1);
+                    } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                        assignGreenhouseWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                    } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                        assignGreenhouseWorkers(s_bid, GREENHOUSE_CAPACITY);
+                    }
+                }
+            }
+
             // Screen & UI interaction coordinates
             const sw_f = @as(f32, @floatFromInt(rl.getScreenWidth()));
             const sh_f = @as(f32, @floatFromInt(rl.getScreenHeight()));
@@ -1430,6 +1578,7 @@ pub fn main() !void {
                                         .progress = 0.0,
                                         .active_builders = 0,
                                         .is_warm = false,
+                                        .assigned_workers = 0,
                                     };
                                     buildings_count += 1;
                                 }
@@ -1475,9 +1624,12 @@ pub fn main() !void {
                         const tab_w: f32 = 110.0;
                         const tab_h: f32 = 28.0;
                         const tab_people_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
-                        const tab_science_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+                        const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+                        const tab_science_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
                         if (rl.checkCollisionPointRec(mouse_pos, tab_people_rect)) {
                             active_build_tab = .people;
+                        } else if (rl.checkCollisionPointRec(mouse_pos, tab_food_rect)) {
+                            active_build_tab = .food;
                         } else if (rl.checkCollisionPointRec(mouse_pos, tab_science_rect)) {
                             active_build_tab = .science;
                         }
@@ -1489,6 +1641,16 @@ pub fn main() !void {
                                 if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.house.woodCost()) {
                                     placing_building = .house;
                                     build_menu_open = false;
+                                }
+                            }
+                        } else if (active_build_tab == .food) {
+                            if (greenhouses_research_state == .completed) {
+                                const gh_card_rect = rl.Rectangle.init(16.0, strip_y + 44.0, 250.0, 92.0);
+                                if (rl.checkCollisionPointRec(mouse_pos, gh_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.greenhouse.woodCost()) {
+                                        placing_building = .greenhouse;
+                                        build_menu_open = false;
+                                    }
                                 }
                             }
                         } else if (active_build_tab == .science) {
@@ -1505,6 +1667,29 @@ pub fn main() !void {
                         const close_rect = rl.Rectangle.init(sw_f - 36.0, strip_y + 8.0, 24.0, 24.0);
                         if (rl.checkCollisionPointRec(mouse_pos, close_rect)) {
                             research_menu_open = false;
+                        }
+                        const tab_y = strip_y + 8.0;
+                        const tab_w: f32 = 110.0;
+                        const tab_h: f32 = 28.0;
+                        const tab_tech_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
+                        const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+                        if (rl.checkCollisionPointRec(mouse_pos, tab_tech_rect)) {
+                            active_research_tab = .technology;
+                        } else if (rl.checkCollisionPointRec(mouse_pos, tab_food_rect)) {
+                            active_research_tab = .food;
+                        }
+
+                        if (active_research_tab == .food) {
+                            const gh_card_rect = rl.Rectangle.init(16.0, strip_y + 44.0, 290.0, 92.0);
+                            if (rl.checkCollisionPointRec(mouse_pos, gh_card_rect)) {
+                                if (greenhouses_research_state == .available) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= GREENHOUSES_RESEARCH_WOOD_COST and hasCompletedLab()) {
+                                        stockpiles[@intFromEnum(Resource.wood)] -= GREENHOUSES_RESEARCH_WOOD_COST;
+                                        greenhouses_research_state = .researching;
+                                        greenhouses_research_progress = 0.0;
+                                    }
+                                }
+                            }
                         }
                     } else if (!in_ui) {
                         var clicked_pile: ?Resource = null;
@@ -1545,6 +1730,17 @@ pub fn main() !void {
                 fuel_warning_timer -= dt;
             }
 
+            // Research progression
+            if (greenhouses_research_state == .researching) {
+                if (hasCompletedLab()) {
+                    greenhouses_research_progress += dt;
+                    if (greenhouses_research_progress >= GREENHOUSES_RESEARCH_DURATION) {
+                        greenhouses_research_progress = GREENHOUSES_RESEARCH_DURATION;
+                        greenhouses_research_state = .completed;
+                    }
+                }
+            }
+
             // 1. Generator coal fuel consumption
             if (generator_active) {
                 const coal_idx = @intFromEnum(Resource.coal);
@@ -1568,6 +1764,16 @@ pub fn main() !void {
                 const count = workers_assigned[idx];
                 if (count > 0) {
                     stockpiles[idx] += @as(f32, @floatFromInt(count)) * r.gatherRate() * dt;
+                }
+            }
+
+            // 2b. Greenhouse Food Production (produces 10 Food/sec with 10 workers)
+            for (buildings[0..buildings_count]) |*b| {
+                if (b.state == .completed and b.btype == .greenhouse) {
+                    if (b.assigned_workers > 0) {
+                        const food_rate = @as(f32, @floatFromInt(b.assigned_workers)) * 1.0;
+                        stockpiles[@intFromEnum(Resource.food)] += food_rate * dt;
+                    }
                 }
             }
 
@@ -1602,6 +1808,9 @@ pub fn main() !void {
                             b.progress = 1.0;
                             b.state = .completed;
                             b.active_builders = 0;
+                            if (b.btype == .greenhouse) {
+                                assignGreenhouseWorkers(b_idx, GREENHOUSE_CAPACITY);
+                            }
                         }
                     }
                     b_idx += 1;
@@ -1950,6 +2159,48 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                 rl.drawCube(.{ .x = b.pos.x - 2.72, .y = 1.5, .z = b.pos.z }, 0.12, 0.9, 2.2, win_glow);
                 rl.drawCube(.{ .x = b.pos.x + 2.72, .y = 1.5, .z = b.pos.z }, 0.12, 0.9, 2.2, win_glow);
             }
+        } else if (b.btype == .greenhouse) {
+            const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
+            if (b.state == .constructing or b.state == .dismantling) {
+                // Foundation slab (3.84 x 0.36 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.84, 0.36, 7.84, scaf_col);
+
+                // 6 scaffolding timber posts
+                const post_h = @max(0.6, 3.2 * b.progress);
+                rl.drawCube(.{ .x = b.pos.x - 1.65, .y = post_h / 2.0, .z = b.pos.z - 3.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 1.65, .y = post_h / 2.0, .z = b.pos.z - 3.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 1.65, .y = post_h / 2.0, .z = b.pos.z }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 1.65, .y = post_h / 2.0, .z = b.pos.z }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 1.65, .y = post_h / 2.0, .z = b.pos.z + 3.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 1.65, .y = post_h / 2.0, .z = b.pos.z + 3.65 }, 0.35, post_h, 0.35, COLOR_WOOD_PILE);
+
+                // Partial rising walls
+                const wall_h = 2.0 * b.progress;
+                if (wall_h > 0.15) {
+                    rl.drawCube(.{ .x = b.pos.x, .y = 0.36 + wall_h / 2.0, .z = b.pos.z }, 3.6, wall_h, 7.6, COLOR_GREENHOUSE_WALLS);
+                }
+            } else {
+                // Completed Greenhouse (2x4 footprint)
+                // Base foundation (3.84 x 0.36 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.84, 0.36, 7.84, rl.Color.init(40, 46, 42, 255));
+                // Lower timber skirting (3.68 x 0.5 x 7.68)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.61, .z = b.pos.z }, 3.68, 0.5, 7.68, COLOR_GREENHOUSE_WALLS);
+                // Glass walls (3.5 x 1.4 x 7.5)
+                rl.drawCube(.{ .x = b.pos.x, .y = 1.56, .z = b.pos.z }, 3.5, 1.4, 7.5, COLOR_GREENHOUSE_GLASS);
+                // Interior glowing crop planter beds (2.6 x 0.35 x 6.6)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.95, .z = b.pos.z }, 2.6, 0.35, 6.6, COLOR_GREENHOUSE_CROPS);
+                // Pitched glass canopy roof (3.68 x 0.65 x 7.68)
+                rl.drawCube(.{ .x = b.pos.x, .y = 2.58, .z = b.pos.z }, 3.68, 0.65, 7.68, COLOR_GREENHOUSE_ROOF);
+                // Top ridge beam (1.2 x 0.22 x 7.68)
+                rl.drawCube(.{ .x = b.pos.x, .y = 2.95, .z = b.pos.z }, 1.2, 0.22, 7.68, COLOR_GREENHOUSE_WALLS);
+                // Structural frame ribs
+                rl.drawCube(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z - 2.5 }, 3.68, 1.6, 0.2, COLOR_GREENHOUSE_WALLS);
+                rl.drawCube(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z }, 3.68, 1.6, 0.2, COLOR_GREENHOUSE_WALLS);
+                rl.drawCube(.{ .x = b.pos.x, .y = 1.6, .z = b.pos.z + 2.5 }, 3.68, 1.6, 0.2, COLOR_GREENHOUSE_WALLS);
+                // Front and back entrance doors
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.88, .z = b.pos.z + 3.82 }, 0.95, 1.35, 0.12, rl.Color.init(32, 55, 45, 255));
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.88, .z = b.pos.z - 3.82 }, 0.95, 1.35, 0.12, rl.Color.init(32, 55, 45, 255));
+            }
         } else {
             // House
             if (b.state == .constructing or b.state == .dismantling) {
@@ -2015,6 +2266,10 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                     rl.drawCube(.{ .x = pos.x, .y = 1.48, .z = pos.z }, 5.4, 2.2, 5.4, col);
                     rl.drawCube(.{ .x = pos.x, .y = 2.75, .z = pos.z }, 5.7, 0.35, 5.7, col);
                     rl.drawCube(.{ .x = pos.x, .y = 3.48, .z = pos.z }, 2.8, 1.1, 2.8, col);
+                } else if (btype == .greenhouse) {
+                    rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.84, 0.36, 7.84, col);
+                    rl.drawCube(.{ .x = pos.x, .y = 1.56, .z = pos.z }, 3.5, 1.4, 7.5, col);
+                    rl.drawCube(.{ .x = pos.x, .y = 2.58, .z = pos.z }, 3.68, 0.65, 7.68, col);
                 } else {
                     rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, col);
                     rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, col);
@@ -2029,17 +2284,23 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
 fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool, snapped_grid: ?GridCoord) void {
     for (buildings[0..buildings_count]) |b| {
         const is_lab = (b.btype == .lab);
-        const w_sz: f32 = if (is_lab) 5.8 else 3.92;
-        const h_sz: f32 = if (is_lab) 3.6 else 3.2;
+        const is_gh = (b.btype == .greenhouse);
+        const w_sz: f32 = if (is_lab) 5.8 else 3.84;
+        const l_sz: f32 = if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
+        const h_sz: f32 = if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
 
         if (b.state == .constructing or b.state == .dismantling) {
             const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz, h_sz, w_sz, scaf_col);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz, h_sz, l_sz, scaf_col);
         } else {
             if (is_lab) {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.48, .z = b.pos.z }, 5.4, 2.2, 5.4, rl.Color.init(45, 55, 68, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.75, .z = b.pos.z }, 5.7, 0.35, 5.7, rl.Color.init(65, 80, 100, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 3.48, .z = b.pos.z }, 2.8, 1.1, 2.8, rl.Color.init(80, 180, 220, 255));
+            } else if (is_gh) {
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.61, .z = b.pos.z }, 3.68, 0.5, 7.68, rl.Color.init(30, 60, 50, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.56, .z = b.pos.z }, 3.5, 1.4, 7.5, rl.Color.init(45, 120, 95, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.58, .z = b.pos.z }, 3.68, 0.65, 7.68, rl.Color.init(55, 140, 110, 255));
             } else {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, rl.Color.init(35, 25, 20, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, rl.Color.init(30, 36, 42, 255));
@@ -2048,10 +2309,10 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
         }
 
         if (selected == b.id) {
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz + 0.12, h_sz + 0.1, w_sz + 0.12, rl.Color.gold);
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.05, .z = b.pos.z }, w_sz + 0.18, 0.1, w_sz + 0.18, rl.Color.gold);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz + 0.12, h_sz + 0.1, l_sz + 0.12, rl.Color.gold);
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.05, .z = b.pos.z }, w_sz + 0.18, 0.1, l_sz + 0.18, rl.Color.gold);
         } else if (hovered == b.id) {
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz + 0.12, h_sz + 0.1, w_sz + 0.12, rl.Color.init(180, 220, 255, 180));
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz + 0.12, h_sz + 0.1, l_sz + 0.12, rl.Color.init(180, 220, 255, 180));
         }
     }
 
@@ -2082,6 +2343,10 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.48, .z = pos.z }, 5.4, 2.2, 5.4, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 2.75, .z = pos.z }, 5.7, 0.35, 5.7, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 3.48, .z = pos.z }, 2.8, 1.1, 2.8, wire_col);
+                } else if (btype == .greenhouse) {
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.84, 0.36, 7.84, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 1.56, .z = pos.z }, 3.5, 1.4, 7.5, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 2.58, .z = pos.z }, 3.68, 0.65, 7.68, wire_col);
                 } else {
                     rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, wire_col);
@@ -2404,13 +2669,16 @@ fn drawBuildingDialog(sw_f: f32) void {
         if (bid < buildings_count) {
             const b = buildings[bid];
             const is_lab = (b.btype == .lab);
+            const is_gh = (b.btype == .greenhouse);
             const panel_w: f32 = 250.0;
-            const panel_h: f32 = 188.0;
+            const panel_h: f32 = if (is_gh and b.state == .completed) 226.0 else 188.0;
             const panel_x: f32 = sw_f - panel_w - 16.0;
             const panel_y: f32 = 46.0 + 14.0;
 
             const border_color = if (b.state == .dismantling)
                 COLOR_DISMANTLE_SCAFFOLD
+            else if (is_gh)
+                rl.Color.init(60, 195, 125, 255)
             else if (is_lab)
                 rl.Color.init(65, 150, 195, 255)
             else
@@ -2420,9 +2688,15 @@ fn drawBuildingDialog(sw_f: f32) void {
             rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, border_color);
 
             // Title icon + text
-            rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, if (is_lab) COLOR_LAB_DOME else COLOR_WOOD_PILE);
-            const title_str = if (is_lab) fmt("LAB #{d}", .{bid + 1}) else fmt("HOUSE #{d}", .{bid + 1});
-            rl.drawText(title_str, @intFromFloat(panel_x + 32), @intFromFloat(panel_y + 10), 16, if (is_lab) rl.Color.init(130, 225, 255, 255) else rl.Color.init(245, 205, 70, 255));
+            const icon_color = if (is_gh) COLOR_GREENHOUSE_ROOF else if (is_lab) COLOR_LAB_DOME else COLOR_WOOD_PILE;
+            rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, icon_color);
+            const title_str = if (is_gh)
+                fmt("GREENHOUSE #{d}", .{bid + 1})
+            else if (is_lab)
+                fmt("LAB #{d}", .{bid + 1})
+            else
+                fmt("HOUSE #{d}", .{bid + 1});
+            rl.drawText(title_str, @intFromFloat(panel_x + 32), @intFromFloat(panel_y + 10), 16, if (is_gh) rl.Color.init(110, 240, 160, 255) else if (is_lab) rl.Color.init(130, 225, 255, 255) else rl.Color.init(245, 205, 70, 255));
 
             // Close button [x]
             if (!is_paused) {
@@ -2432,7 +2706,9 @@ fn drawBuildingDialog(sw_f: f32) void {
             }
 
             // Subtitle & Grid coordinates
-            const subtitle = if (is_lab)
+            const subtitle = if (is_gh)
+                fmt("Agricultural Complex | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
+            else if (is_lab)
                 fmt("Research Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else
                 fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z });
@@ -2440,30 +2716,79 @@ fn drawBuildingDialog(sw_f: f32) void {
 
             // Status & Info rows
             if (b.state == .completed) {
-                rl.drawText(if (is_lab) "STATUS: OPERATIONAL" else "STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
-                const cap_str = if (is_lab)
-                    fmt("Staff Capacity: {d} Researchers", .{b.btype.capacity()})
-                else
-                    fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
-                _ = rl.drawText(cap_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
-                if (b.is_warm) {
-                    rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, COLOR_CITIZEN_WARM);
-                } else {
-                    rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, rl.Color.init(110, 185, 255, 255));
-                }
+                if (is_gh) {
+                    const status_str = if (b.assigned_workers >= 10) "STATUS: FULL PRODUCTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL PRODUCTION" else "STATUS: UNSTAFFED (IDLE)";
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 230, 140, 255) else rl.Color.init(245, 195, 65, 255));
 
-                // Action button: Destroy
-                if (!is_paused) {
-                    if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Destroy")) {
-                        buildings[bid].state = .dismantling;
-                        buildings[bid].progress = 1.0;
-                        buildings[bid].active_builders = 0;
-                        if (!hasCompletedLab() and research_menu_open) {
-                            research_menu_open = false;
+                    const staff_str = fmt("Staff: {d} / {d} Workers", .{ b.assigned_workers, GREENHOUSE_CAPACITY });
+                    rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
+
+                    const yield_str = fmt("Yield: +{d:.1} Food/sec", .{@as(f32, @floatFromInt(b.assigned_workers)) * 1.0});
+                    rl.drawText(yield_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, rl.Color.init(110, 235, 150, 255));
+
+                    // Worker control buttons: None, -1, +1, Max
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 104, 48, 22), "None")) {
+                            assignGreenhouseWorkers(bid, -b.assigned_workers);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 68, panel_y + 104, 38, 22), "-1")) {
+                            assignGreenhouseWorkers(bid, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 112, panel_y + 104, 38, 22), "+1")) {
+                            assignGreenhouseWorkers(bid, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 156, panel_y + 104, 48, 22), "Max")) {
+                            assignGreenhouseWorkers(bid, GREENHOUSE_CAPACITY);
                         }
                     }
+
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
+                            if (b.assigned_workers > 0) {
+                                assignGreenhouseWorkers(bid, -b.assigned_workers);
+                            }
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                } else {
+                    rl.drawText(if (is_lab) "STATUS: OPERATIONAL" else "STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
+                    const cap_str = if (is_lab)
+                        fmt("Staff Capacity: {d} Researchers", .{b.btype.capacity()})
+                    else
+                        fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
+                    _ = rl.drawText(cap_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Destroy")) {
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
                 }
-                rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
             } else if (b.state == .constructing) {
                 rl.drawText("STATUS: UNDER CONSTRUCTION", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(245, 195, 65, 255));
                 const pct = @as(i32, @intFromFloat(b.progress * 100.0));
@@ -2566,25 +2891,36 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
         }
         rl.drawText("PEOPLE", 46, @intFromFloat(tab_y + 7), 13, if (is_people) rl.Color.init(245, 210, 80, 255) else rl.Color.init(140, 155, 175, 255));
 
-        // Tab 2: "Science"
+        // Tab 2: "Food"
+        const is_food = (active_build_tab == .food);
+        const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+        const food_hovered = rl.checkCollisionPointRec(mouse_pos, tab_food_rect);
+        rl.drawRectangleRounded(tab_food_rect, 0.25, 4, if (is_food) rl.Color.init(28, 55, 40, 255) else if (food_hovered) rl.Color.init(32, 48, 38, 220) else rl.Color.init(24, 28, 36, 180));
+        if (is_food) {
+            rl.drawRectangleRoundedLinesEx(tab_food_rect, 0.25, 4, 1.5, rl.Color.init(100, 225, 130, 255));
+            rl.drawRectangle(136, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(100, 225, 130, 255));
+        }
+        rl.drawText("FOOD", 170, @intFromFloat(tab_y + 7), 13, if (is_food) rl.Color.init(130, 245, 150, 255) else rl.Color.init(140, 155, 175, 255));
+
+        // Tab 3: "Science"
         const is_science = (active_build_tab == .science);
-        const tab_science_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+        const tab_science_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
         const science_hovered = rl.checkCollisionPointRec(mouse_pos, tab_science_rect);
         rl.drawRectangleRounded(tab_science_rect, 0.25, 4, if (is_science) rl.Color.init(30, 56, 75, 255) else if (science_hovered) rl.Color.init(32, 40, 52, 220) else rl.Color.init(24, 28, 36, 180));
         if (is_science) {
             rl.drawRectangleRoundedLinesEx(tab_science_rect, 0.25, 4, 1.5, rl.Color.init(100, 215, 255, 255));
-            rl.drawRectangle(136, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(100, 215, 255, 255));
+            rl.drawRectangle(254, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(100, 215, 255, 255));
         }
-        rl.drawText("SCIENCE", 160, @intFromFloat(tab_y + 7), 13, if (is_science) rl.Color.init(130, 225, 255, 255) else rl.Color.init(140, 155, 175, 255));
+        rl.drawText("SCIENCE", 278, @intFromFloat(tab_y + 7), 13, if (is_science) rl.Color.init(130, 225, 255, 255) else rl.Color.init(140, 155, 175, 255));
 
         // Inactive tabs
-        const tab_res_rect = rl.Rectangle.init(252.0, tab_y, tab_w + 10, tab_h);
+        const tab_res_rect = rl.Rectangle.init(370.0, tab_y, tab_w + 10, tab_h);
         rl.drawRectangleRounded(tab_res_rect, 0.25, 4, rl.Color.init(24, 28, 36, 140));
-        rl.drawText("RESOURCES", 264, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 100, 115, 255));
+        rl.drawText("RESOURCES", 382, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 100, 115, 255));
 
-        const tab_heat_rect = rl.Rectangle.init(380.0, tab_y, tab_w, tab_h);
+        const tab_heat_rect = rl.Rectangle.init(498.0, tab_y, tab_w, tab_h);
         rl.drawRectangleRounded(tab_heat_rect, 0.25, 4, rl.Color.init(24, 28, 36, 140));
-        rl.drawText("HEATING", 402, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 100, 115, 255));
+        rl.drawText("HEATING", 520, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 100, 115, 255));
 
         // Close button [x]
         const close_btn_rect = rl.Rectangle.init(sw - 36.0, tab_y, 24.0, 24.0);
@@ -2646,6 +2982,86 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
                     13,
                     if (can_afford) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
                 );
+            }
+        } else if (active_build_tab == .food) {
+            const is_unlocked = (greenhouses_research_state == .completed);
+            const card_x: f32 = 16.0;
+            const card_y: f32 = strip_y + 44.0;
+            const card_w: f32 = 250.0;
+            const card_h: f32 = 92.0;
+            const card_rect = rl.Rectangle.init(card_x, card_y, card_w, card_h);
+            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect);
+
+            const current_wood = stockpiles[@intFromEnum(Resource.wood)];
+            const can_afford = current_wood >= GREENHOUSE_WOOD_COST;
+
+            if (is_unlocked) {
+                const card_bg = if (card_hovered)
+                    rl.Color.init(24, 48, 36, 255)
+                else
+                    rl.Color.init(18, 34, 26, 240);
+
+                const card_border = if (card_hovered)
+                    rl.Color.init(90, 225, 135, 255)
+                else
+                    rl.Color.init(45, 95, 65, 255);
+
+                rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered) 2.0 else 1.2, card_border);
+
+                // Mini Greenhouse Preview Icon
+                rl.drawRectangle(@intFromFloat(card_x + 10), @intFromFloat(card_y + 14), 30, 20, COLOR_GREENHOUSE_WALLS);
+                rl.drawRectangle(@intFromFloat(card_x + 8), @intFromFloat(card_y + 10), 34, 6, COLOR_GREENHOUSE_ROOF);
+                rl.drawRectangle(@intFromFloat(card_x + 14), @intFromFloat(card_y + 18), 22, 14, COLOR_GREENHOUSE_GLASS);
+                rl.drawRectangle(@intFromFloat(card_x + 17), @intFromFloat(card_y + 24), 16, 6, COLOR_GREENHOUSE_CROPS);
+
+                // Building Name
+                rl.drawText("Greenhouse", @intFromFloat(card_x + 50), @intFromFloat(card_y + 10), 16, rl.Color.white);
+
+                // Cost Badge
+                const cost_pill_rect = rl.Rectangle.init(card_x + 50, card_y + 32, 102, 20);
+                rl.drawRectangleRounded(cost_pill_rect, 0.3, 4, if (can_afford) rl.Color.init(28, 55, 38, 255) else rl.Color.init(60, 28, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cost_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(80, 185, 115, 255) else rl.Color.init(215, 70, 70, 255));
+                const cost_text = fmt("Cost: {d} Wood", .{@as(i32, @intFromFloat(GREENHOUSE_WOOD_COST))});
+                rl.drawText(cost_text, @intFromFloat(card_x + 56), @intFromFloat(card_y + 36), 11, if (can_afford) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
+
+                // Footprint, Capacity & Builder Specs
+                rl.drawText("Footprint: 2x4 Grid Squares", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(120, 235, 150, 255));
+                rl.drawText("Staff: 10 Workers | Produces 10 Food/sec", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(160, 180, 205, 255));
+
+                // Click instruction tip
+                if (card_hovered) {
+                    rl.drawText(
+                        if (can_afford) "Click to select and place in the snow" else "Cannot afford (Requires 20 Wood)",
+                        @intFromFloat(card_x + card_w + 16),
+                        @intFromFloat(card_y + 36),
+                        13,
+                        if (can_afford) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 100, 90, 255),
+                    );
+                }
+            } else {
+                // Locked state
+                const card_bg = rl.Color.init(20, 24, 30, 210);
+                const card_border = rl.Color.init(50, 60, 72, 200);
+
+                rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, 1.0, card_border);
+
+                // Lock icon
+                rl.drawRectangle(@intFromFloat(card_x + 14), @intFromFloat(card_y + 16), 24, 22, rl.Color.init(45, 52, 64, 255));
+                rl.drawRectangleLines(@intFromFloat(card_x + 14), @intFromFloat(card_y + 16), 24, 22, rl.Color.init(75, 88, 105, 255));
+                rl.drawText("?", @intFromFloat(card_x + 22), @intFromFloat(card_y + 18), 16, rl.Color.init(140, 155, 175, 255));
+
+                // Building Name
+                rl.drawText("Greenhouse", @intFromFloat(card_x + 50), @intFromFloat(card_y + 10), 16, rl.Color.init(140, 150, 165, 255));
+
+                // Locked badge
+                const locked_badge = rl.Rectangle.init(card_x + 50, card_y + 32, 108, 18);
+                rl.drawRectangleRounded(locked_badge, 0.3, 4, rl.Color.init(40, 48, 58, 255));
+                rl.drawText("[LOCKED - RESEARCH]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 35), 9, rl.Color.init(245, 195, 65, 255));
+
+                rl.drawText("Requires 'Greenhouses' research in Food tab", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(160, 175, 195, 255));
+                rl.drawText("2x4 Grid | Staff: 10 | Produces 10 Food/sec", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(120, 135, 150, 255));
             }
         } else if (active_build_tab == .science) {
             // Lab Card
@@ -2785,24 +3201,39 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
 
         // --- Tabs Header ---
         const tab_y = strip_y + 8.0;
-        const tab_w: f32 = 130.0;
+        const tab_w: f32 = 110.0;
         const tab_h: f32 = 28.0;
 
-        // Tab 1: "TECHNOLOGY" (Placeholder Tab, Active)
+        // Tab 1: "TECHNOLOGY"
+        const is_tech = (active_research_tab == .technology);
         const tab_tech_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
-        rl.drawRectangleRounded(tab_tech_rect, 0.25, 4, rl.Color.init(28, 55, 78, 255));
-        rl.drawRectangleRoundedLinesEx(tab_tech_rect, 0.25, 4, 1.5, rl.Color.init(90, 215, 255, 255));
-        rl.drawText("TECHNOLOGY", 32, @intFromFloat(tab_y + 7), 13, rl.Color.init(140, 230, 255, 255));
-        rl.drawRectangle(18, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(90, 215, 255, 255));
+        const tech_hovered = rl.checkCollisionPointRec(mouse_pos, tab_tech_rect);
+        rl.drawRectangleRounded(tab_tech_rect, 0.25, 4, if (is_tech) rl.Color.init(28, 55, 78, 255) else if (tech_hovered) rl.Color.init(25, 42, 60, 220) else rl.Color.init(22, 28, 38, 180));
+        if (is_tech) {
+            rl.drawRectangleRoundedLinesEx(tab_tech_rect, 0.25, 4, 1.5, rl.Color.init(90, 215, 255, 255));
+            rl.drawRectangle(18, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(90, 215, 255, 255));
+        }
+        rl.drawText("TECHNOLOGY", 24, @intFromFloat(tab_y + 7), 12, if (is_tech) rl.Color.init(140, 230, 255, 255) else rl.Color.init(120, 140, 165, 255));
 
-        // Inactive placeholder tabs
-        const tab_heating_rect = rl.Rectangle.init(154.0, tab_y, tab_w, tab_h);
-        rl.drawRectangleRounded(tab_heating_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
-        rl.drawText("EFFICIENCY", 178, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+        // Tab 2: "FOOD"
+        const is_food = (active_research_tab == .food);
+        const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+        const food_hovered = rl.checkCollisionPointRec(mouse_pos, tab_food_rect);
+        rl.drawRectangleRounded(tab_food_rect, 0.25, 4, if (is_food) rl.Color.init(28, 55, 40, 255) else if (food_hovered) rl.Color.init(25, 45, 35, 220) else rl.Color.init(22, 28, 38, 180));
+        if (is_food) {
+            rl.drawRectangleRoundedLinesEx(tab_food_rect, 0.25, 4, 1.5, rl.Color.init(100, 225, 130, 255));
+            rl.drawRectangle(136, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(100, 225, 130, 255));
+        }
+        rl.drawText("FOOD", 170, @intFromFloat(tab_y + 7), 13, if (is_food) rl.Color.init(130, 245, 150, 255) else rl.Color.init(120, 140, 165, 255));
 
-        const tab_exp_rect = rl.Rectangle.init(292.0, tab_y, tab_w, tab_h);
+        // Inactive tabs
+        const tab_eff_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
+        rl.drawRectangleRounded(tab_eff_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
+        rl.drawText("EFFICIENCY", 268, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+
+        const tab_exp_rect = rl.Rectangle.init(370.0, tab_y, tab_w + 10, tab_h);
         rl.drawRectangleRounded(tab_exp_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
-        rl.drawText("EXPLORATION", 310, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+        rl.drawText("EXPLORATION", 384, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
 
         // Close button [x]
         const close_btn_rect = rl.Rectangle.init(sw - 36.0, tab_y, 24.0, 24.0);
@@ -2810,54 +3241,123 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
         rl.drawRectangleRounded(close_btn_rect, 0.2, 4, if (close_hovered) rl.Color.init(200, 50, 50, 255) else rl.Color.init(32, 38, 48, 255));
         rl.drawText("x", @intFromFloat(sw - 29), @intFromFloat(tab_y + 3), 15, rl.Color.white);
 
-        // --- Placeholder Research Cards ---
-        // Card 1: Heater Overdrive
-        const card1_x: f32 = 16.0;
-        const card1_y: f32 = strip_y + 44.0;
-        const card1_w: f32 = 260.0;
-        const card1_h: f32 = 92.0;
-        const card1_rect = rl.Rectangle.init(card1_x, card1_y, card1_w, card1_h);
-        const card1_hovered = rl.checkCollisionPointRec(mouse_pos, card1_rect);
+        // --- Active Tab Content ---
+        if (active_research_tab == .technology) {
+            // Card 1: Heater Overdrive
+            const card1_x: f32 = 16.0;
+            const card1_y: f32 = strip_y + 44.0;
+            const card1_w: f32 = 260.0;
+            const card1_h: f32 = 92.0;
+            const card1_rect = rl.Rectangle.init(card1_x, card1_y, card1_w, card1_h);
+            const card1_hovered = rl.checkCollisionPointRec(mouse_pos, card1_rect);
 
-        rl.drawRectangleRounded(card1_rect, 0.12, 6, if (card1_hovered) rl.Color.init(28, 48, 68, 255) else rl.Color.init(20, 32, 46, 240));
-        rl.drawRectangleRoundedLinesEx(card1_rect, 0.12, 6, if (card1_hovered) 2.0 else 1.2, if (card1_hovered) rl.Color.init(90, 215, 255, 255) else rl.Color.init(55, 95, 130, 255));
+            rl.drawRectangleRounded(card1_rect, 0.12, 6, if (card1_hovered) rl.Color.init(28, 48, 68, 255) else rl.Color.init(20, 32, 46, 240));
+            rl.drawRectangleRoundedLinesEx(card1_rect, 0.12, 6, if (card1_hovered) 2.0 else 1.2, if (card1_hovered) rl.Color.init(90, 215, 255, 255) else rl.Color.init(55, 95, 130, 255));
 
-        // Card 1 Icon
-        rl.drawRectangle(@intFromFloat(card1_x + 12), @intFromFloat(card1_y + 12), 26, 26, rl.Color.init(35, 75, 105, 255));
-        rl.drawRectangleLines(@intFromFloat(card1_x + 12), @intFromFloat(card1_y + 12), 26, 26, rl.Color.init(90, 210, 255, 255));
-        rl.drawText("*", @intFromFloat(card1_x + 21), @intFromFloat(card1_y + 14), 18, rl.Color.init(245, 205, 70, 255));
+            // Card 1 Icon
+            rl.drawRectangle(@intFromFloat(card1_x + 12), @intFromFloat(card1_y + 12), 26, 26, rl.Color.init(35, 75, 105, 255));
+            rl.drawRectangleLines(@intFromFloat(card1_x + 12), @intFromFloat(card1_y + 12), 26, 26, rl.Color.init(90, 210, 255, 255));
+            rl.drawText("*", @intFromFloat(card1_x + 21), @intFromFloat(card1_y + 14), 18, rl.Color.init(245, 205, 70, 255));
 
-        rl.drawText("Heater Overdrive", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 10), 15, rl.Color.white);
-        rl.drawText("Tier I Research Project", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 30), 11, rl.Color.init(120, 200, 240, 255));
-        rl.drawText("+25% Generator heat range", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 48), 11, rl.Color.init(190, 210, 230, 255));
+            rl.drawText("Heater Overdrive", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 10), 15, rl.Color.white);
+            rl.drawText("Tier I Research Project", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 30), 11, rl.Color.init(120, 200, 240, 255));
+            rl.drawText("+25% Generator heat range", @intFromFloat(card1_x + 48), @intFromFloat(card1_y + 48), 11, rl.Color.init(190, 210, 230, 255));
 
-        const badge1_rect = rl.Rectangle.init(card1_x + 48, card1_y + 68, 120, 18);
-        rl.drawRectangleRounded(badge1_rect, 0.3, 4, rl.Color.init(35, 50, 65, 255));
-        rl.drawText("[COMING SOON]", @intFromFloat(card1_x + 56), @intFromFloat(card1_y + 71), 10, rl.Color.init(140, 190, 220, 255));
+            const badge1_rect = rl.Rectangle.init(card1_x + 48, card1_y + 68, 120, 18);
+            rl.drawRectangleRounded(badge1_rect, 0.3, 4, rl.Color.init(35, 50, 65, 255));
+            rl.drawText("[COMING SOON]", @intFromFloat(card1_x + 56), @intFromFloat(card1_y + 71), 10, rl.Color.init(140, 190, 220, 255));
 
-        // Card 2: Insulation Tech
-        const card2_x: f32 = card1_x + card1_w + 14.0;
-        const card2_y: f32 = card1_y;
-        const card2_w: f32 = 260.0;
-        const card2_h: f32 = 92.0;
-        const card2_rect = rl.Rectangle.init(card2_x, card2_y, card2_w, card2_h);
-        const card2_hovered = rl.checkCollisionPointRec(mouse_pos, card2_rect);
+            // Card 2: Insulation Tech
+            const card2_x: f32 = card1_x + card1_w + 14.0;
+            const card2_y: f32 = card1_y;
+            const card2_w: f32 = 260.0;
+            const card2_h: f32 = 92.0;
+            const card2_rect = rl.Rectangle.init(card2_x, card2_y, card2_w, card2_h);
+            const card2_hovered = rl.checkCollisionPointRec(mouse_pos, card2_rect);
 
-        rl.drawRectangleRounded(card2_rect, 0.12, 6, if (card2_hovered) rl.Color.init(28, 48, 68, 255) else rl.Color.init(20, 32, 46, 240));
-        rl.drawRectangleRoundedLinesEx(card2_rect, 0.12, 6, if (card2_hovered) 2.0 else 1.2, if (card2_hovered) rl.Color.init(90, 215, 255, 255) else rl.Color.init(55, 95, 130, 255));
+            rl.drawRectangleRounded(card2_rect, 0.12, 6, if (card2_hovered) rl.Color.init(28, 48, 68, 255) else rl.Color.init(20, 32, 46, 240));
+            rl.drawRectangleRoundedLinesEx(card2_rect, 0.12, 6, if (card2_hovered) 2.0 else 1.2, if (card2_hovered) rl.Color.init(90, 215, 255, 255) else rl.Color.init(55, 95, 130, 255));
 
-        // Card 2 Icon
-        rl.drawRectangle(@intFromFloat(card2_x + 12), @intFromFloat(card2_y + 12), 26, 26, rl.Color.init(35, 75, 105, 255));
-        rl.drawRectangleLines(@intFromFloat(card2_x + 12), @intFromFloat(card2_y + 12), 26, 26, rl.Color.init(90, 210, 255, 255));
-        rl.drawText("+", @intFromFloat(card2_x + 20), @intFromFloat(card2_y + 16), 18, rl.Color.init(100, 230, 140, 255));
+            // Card 2 Icon
+            rl.drawRectangle(@intFromFloat(card2_x + 12), @intFromFloat(card2_y + 12), 26, 26, rl.Color.init(35, 75, 105, 255));
+            rl.drawRectangleLines(@intFromFloat(card2_x + 12), @intFromFloat(card2_y + 12), 26, 26, rl.Color.init(90, 210, 255, 255));
+            rl.drawText("+", @intFromFloat(card2_x + 20), @intFromFloat(card2_y + 16), 18, rl.Color.init(100, 230, 140, 255));
 
-        rl.drawText("Thermal Insulation", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 10), 15, rl.Color.white);
-        rl.drawText("Tier I Research Project", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 30), 11, rl.Color.init(120, 200, 240, 255));
-        rl.drawText("Houses stay warm longer", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 48), 11, rl.Color.init(190, 210, 230, 255));
+            rl.drawText("Thermal Insulation", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 10), 15, rl.Color.white);
+            rl.drawText("Tier I Research Project", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 30), 11, rl.Color.init(120, 200, 240, 255));
+            rl.drawText("Houses stay warm longer", @intFromFloat(card2_x + 48), @intFromFloat(card2_y + 48), 11, rl.Color.init(190, 210, 230, 255));
 
-        const badge2_rect = rl.Rectangle.init(card2_x + 48, card2_y + 68, 120, 18);
-        rl.drawRectangleRounded(badge2_rect, 0.3, 4, rl.Color.init(35, 50, 65, 255));
-        rl.drawText("[COMING SOON]", @intFromFloat(card2_x + 56), @intFromFloat(card2_y + 71), 10, rl.Color.init(140, 190, 220, 255));
+            const badge2_rect = rl.Rectangle.init(card2_x + 48, card2_y + 68, 120, 18);
+            rl.drawRectangleRounded(badge2_rect, 0.3, 4, rl.Color.init(35, 50, 65, 255));
+            rl.drawText("[COMING SOON]", @intFromFloat(card2_x + 56), @intFromFloat(card2_y + 71), 10, rl.Color.init(140, 190, 220, 255));
+        } else if (active_research_tab == .food) {
+            // Greenhouses Research Card
+            const card_x: f32 = 16.0;
+            const card_y: f32 = strip_y + 44.0;
+            const card_w: f32 = 290.0;
+            const card_h: f32 = 92.0;
+            const card_rect = rl.Rectangle.init(card_x, card_y, card_w, card_h);
+            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect);
+
+            const current_wood = stockpiles[@intFromEnum(Resource.wood)];
+            const can_afford = current_wood >= GREENHOUSES_RESEARCH_WOOD_COST;
+
+            const card_bg = if (card_hovered)
+                rl.Color.init(25, 48, 38, 255)
+            else
+                rl.Color.init(18, 32, 26, 240);
+
+            const card_border = if (card_hovered)
+                rl.Color.init(100, 225, 140, 255)
+            else
+                rl.Color.init(50, 95, 68, 255);
+
+            rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+            rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered) 2.0 else 1.2, card_border);
+
+            // Icon: Greenery sprout symbol
+            rl.drawRectangle(@intFromFloat(card_x + 12), @intFromFloat(card_y + 12), 26, 26, rl.Color.init(25, 65, 40, 255));
+            rl.drawRectangleLines(@intFromFloat(card_x + 12), @intFromFloat(card_y + 12), 26, 26, rl.Color.init(80, 215, 120, 255));
+            rl.drawText("G", @intFromFloat(card_x + 20), @intFromFloat(card_y + 15), 18, rl.Color.init(100, 235, 140, 255));
+
+            rl.drawText("Greenhouses", @intFromFloat(card_x + 48), @intFromFloat(card_y + 10), 15, rl.Color.white);
+            rl.drawText("Food & Sustenance Project", @intFromFloat(card_x + 48), @intFromFloat(card_y + 28), 11, rl.Color.init(120, 220, 150, 255));
+
+            if (greenhouses_research_state == .available) {
+                // Cost badge
+                const cost_text = fmt("Cost: {d} Wood | Time: 2m 00s", .{@as(i32, @intFromFloat(GREENHOUSES_RESEARCH_WOOD_COST))});
+                rl.drawText(cost_text, @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, if (can_afford) rl.Color.init(140, 240, 160, 255) else rl.Color.init(255, 110, 110, 255));
+
+                // Button pill
+                const btn_pill_rect = rl.Rectangle.init(card_x + 48, card_y + 64, 160, 20);
+                rl.drawRectangleRounded(btn_pill_rect, 0.3, 4, if (can_afford) (if (card_hovered) rl.Color.init(35, 90, 55, 255) else rl.Color.init(26, 65, 40, 255)) else rl.Color.init(55, 25, 25, 255));
+                rl.drawRectangleRoundedLinesEx(btn_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(90, 210, 130, 255) else rl.Color.init(180, 60, 60, 255));
+                rl.drawText(if (can_afford) "Click to Research (20 Wood)" else "Need 20 Wood to Research", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, if (can_afford) rl.Color.white else rl.Color.init(255, 130, 130, 255));
+            } else if (greenhouses_research_state == .researching) {
+                const pct = greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION;
+                const rem = @max(0, @as(i32, @intFromFloat(GREENHOUSES_RESEARCH_DURATION - greenhouses_research_progress)));
+                const rem_min = @divTrunc(rem, 60);
+                const rem_sec = @rem(rem, 60);
+
+                _ = rl.drawText(fmt("Researching: {d}% | {d}m {d:0>2}s remaining", .{ @as(i32, @intFromFloat(pct * 100.0)), rem_min, rem_sec }), @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(100, 225, 255, 255));
+
+                // Progress Bar
+                const bar_w: f32 = 220.0;
+                const bar_h: f32 = 14.0;
+                const bar_x: f32 = card_x + 48;
+                const bar_y: f32 = card_y + 66;
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
+                rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, rl.Color.init(60, 210, 140, 255));
+            } else if (greenhouses_research_state == .completed) {
+                rl.drawText("Unlocks 2x4 Greenhouse building", @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(180, 215, 190, 255));
+
+                const comp_rect = rl.Rectangle.init(card_x + 48, card_y + 64, 160, 20);
+                rl.drawRectangleRounded(comp_rect, 0.3, 4, rl.Color.init(24, 60, 38, 255));
+                rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(80, 220, 130, 255));
+                rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, rl.Color.init(110, 240, 150, 255));
+            }
+        }
     }
 }
 
@@ -2947,10 +3447,16 @@ fn drawPopulationPopover(x: f32, y: f32) void {
             construction_workers += b.active_builders;
         }
     }
-    const total_working: i32 = resource_workers + construction_workers;
+    var greenhouse_workers: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .completed and b.btype == .greenhouse) {
+            greenhouse_workers += b.assigned_workers;
+        }
+    }
+    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers;
     const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
 
-    const pop_w: f32 = 236.0;
+    const pop_w: f32 = 264.0;
     const pop_h: f32 = 160.0;
 
     // Subtle drop shadow
@@ -2998,8 +3504,8 @@ fn drawPopulationPopover(x: f32, y: f32) void {
 
     // Breakdown details
     rl.drawText(
-        fmt("  Gatherers: {d}  |  Builders: {d}", .{ resource_workers, construction_workers }),
-        @intFromFloat(x + 24.0),
+        fmt("  Gatherers: {d} | Builders: {d} | Farmers: {d}", .{ resource_workers, construction_workers, greenhouse_workers }),
+        @intFromFloat(x + 20.0),
         @intFromFloat(y + 58.0),
         11,
         rl.Color.init(140, 165, 190, 255),
@@ -3074,9 +3580,19 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
 
-        // Net rate calculation (Coal accounts for generator fuel consumption)
+        // Net rate calculation (Coal accounts for generator fuel consumption, Food accounts for greenhouses)
+        var gh_food_rate: f32 = 0.0;
+        if (r == .food) {
+            for (buildings[0..buildings_count]) |b| {
+                if (b.state == .completed and b.btype == .greenhouse) {
+                    gh_food_rate += @as(f32, @floatFromInt(b.assigned_workers)) * 1.0;
+                }
+            }
+        }
         const net_rate: f32 = if (r == .coal)
             (@as(f32, @floatFromInt(workers)) * r.gatherRate()) - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
+        else if (r == .food)
+            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) + gh_food_rate
         else
             @as(f32, @floatFromInt(workers)) * r.gatherRate();
 
