@@ -166,6 +166,7 @@ pub var COLOR_LAB_WALLS: rl.Color = rl.Color.init(68, 76, 88, 255); // Industria
 pub var COLOR_LAB_ROOF: rl.Color = rl.Color.init(42, 58, 72, 255); // Deep slate blue roof
 pub var COLOR_LAB_DOME: rl.Color = rl.Color.init(50, 175, 205, 255); // Cyan glass observatory dome
 pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
+pub var COLOR_DISMANTLE_SCAFFOLD: rl.Color = rl.Color.init(205, 80, 60, 255); // Demolition/dismantling scaffolding frame
 pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
 pub var COLOR_GHOST_INVALID: rl.Color = rl.Color.init(235, 60, 60, 150); // Translucent red preview
 
@@ -335,6 +336,7 @@ pub const BuildingType = enum(usize) {
 pub const BuildingState = enum {
     constructing,
     completed,
+    dismantling,
 };
 
 pub const Building = struct {
@@ -711,6 +713,31 @@ fn hasCompletedLab() bool {
     return false;
 }
 
+fn removeBuilding(idx: usize) void {
+    if (idx >= buildings_count) return;
+    var i = idx;
+    while (i + 1 < buildings_count) : (i += 1) {
+        buildings[i] = buildings[i + 1];
+        buildings[i].id = i;
+    }
+    buildings_count -= 1;
+
+    if (selected_building) |sel| {
+        if (sel == idx) {
+            selected_building = null;
+        } else if (sel > idx) {
+            selected_building = sel - 1;
+        }
+    }
+    if (hovered_building) |hov| {
+        if (hov == idx) {
+            hovered_building = null;
+        } else if (hov > idx) {
+            hovered_building = hov - 1;
+        }
+    }
+}
+
 fn getBuildBtnRect(sh: f32) rl.Rectangle {
     const btn_w: f32 = 126.0;
     const btn_h: f32 = 36.0;
@@ -871,7 +898,7 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
         // Idle citizens: If there is an active construction site with active builders,
         // wander around that construction site to visually assist!
         for (buildings[0..buildings_count]) |b| {
-            if (b.state == .constructing and b.active_builders > 0) {
+            if ((b.state == .constructing or b.state == .dismantling) and b.active_builders > 0) {
                 if (randomFloat(0.0, 1.0) < 0.65) {
                     const angle = randomFloat(0.0, std.math.pi * 2.0);
                     const dist = randomFloat(1.6, 3.2);
@@ -1302,7 +1329,7 @@ pub fn main() !void {
                 mouse_pos.y >= gen_dialog_y and mouse_pos.y <= gen_dialog_y + gen_dialog_h;
 
             const bldg_dialog_w: f32 = 250.0;
-            const bldg_dialog_h: f32 = 180.0;
+            const bldg_dialog_h: f32 = 188.0;
             const bldg_dialog_x: f32 = sw_f - bldg_dialog_w - 16.0;
             const bldg_dialog_y: f32 = 46.0 + 14.0;
             const in_building_dialog = (selected_building != null) and
@@ -1552,9 +1579,11 @@ pub fn main() !void {
             // 4. Generator smoke/steam particles (SIMD SoA)
             smoke_soa.update(dt, generator_active);
 
-            // 5. Building construction simulation (idle workers)
+            // 5. Building construction & dismantling simulation (idle workers)
             var idle_available: usize = citizen_mgr.getIdleCount();
-            for (buildings[0..buildings_count]) |*b| {
+            var b_idx: usize = 0;
+            while (b_idx < buildings_count) {
+                var b = &buildings[b_idx];
                 const dist_to_gen_sq = b.pos.x * b.pos.x + b.pos.z * b.pos.z;
                 b.is_warm = generator_active and (dist_to_gen_sq <= GENERATOR_HEAT_RADIUS * GENERATOR_HEAT_RADIUS);
 
@@ -1575,8 +1604,31 @@ pub fn main() !void {
                             b.active_builders = 0;
                         }
                     }
+                    b_idx += 1;
+                } else if (b.state == .dismantling) {
+                    const needed: usize = @intCast(b.btype.maxBuilders());
+                    const assigned = @min(idle_available, needed);
+                    b.active_builders = @intCast(assigned);
+                    idle_available -= assigned;
+
+                    if (b.active_builders > 0) {
+                        const speed_mult = @as(f32, @floatFromInt(b.active_builders)) / @as(f32, @floatFromInt(b.btype.maxBuilders()));
+                        const progress_delta = (speed_mult / b.btype.baseBuildTime()) * dt;
+                        b.progress -= progress_delta;
+                        if (b.progress <= 0.0) {
+                            // Dismantling complete: return all resources used to build it
+                            stockpiles[@intFromEnum(Resource.wood)] += b.btype.woodCost();
+                            removeBuilding(b_idx);
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                            continue;
+                        }
+                    }
+                    b_idx += 1;
                 } else {
                     b.active_builders = 0;
+                    b_idx += 1;
                 }
             }
         }
@@ -1862,9 +1914,10 @@ fn drawBlueprintGrid(gx: i32, gz: i32, gw: i32, gl: i32) void {
 fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place: bool, snapped_grid: ?GridCoord) void {
     for (buildings[0..buildings_count]) |b| {
         if (b.btype == .lab) {
-            if (b.state == .constructing) {
+            if (b.state == .constructing or b.state == .dismantling) {
+                const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
                 // Foundation slab (5.8 x 0.38 x 5.8)
-                rl.drawCube(.{ .x = b.pos.x, .y = 0.19, .z = b.pos.z }, 5.8, 0.38, 5.8, COLOR_SCAFFOLDING);
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.19, .z = b.pos.z }, 5.8, 0.38, 5.8, scaf_col);
 
                 // 4 corner timber scaffolding posts (height rises with progress)
                 const post_h = @max(0.6, 3.4 * b.progress);
@@ -1899,9 +1952,10 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
             }
         } else {
             // House
-            if (b.state == .constructing) {
+            if (b.state == .constructing or b.state == .dismantling) {
+                const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
                 // Foundation slab (3.92 x 0.36 x 3.92)
-                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.92, 0.36, 3.92, COLOR_SCAFFOLDING);
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 3.92, 0.36, 3.92, scaf_col);
 
                 // 4 corner timber scaffolding posts (height rises with progress)
                 const post_h = @max(0.6, 3.2 * b.progress);
@@ -1978,8 +2032,9 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
         const w_sz: f32 = if (is_lab) 5.8 else 3.92;
         const h_sz: f32 = if (is_lab) 3.6 else 3.2;
 
-        if (b.state == .constructing) {
-            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz, h_sz, w_sz, COLOR_SCAFFOLDING);
+        if (b.state == .constructing or b.state == .dismantling) {
+            const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
+            rl.drawCubeWires(.{ .x = b.pos.x, .y = h_sz / 2.0, .z = b.pos.z }, w_sz, h_sz, w_sz, scaf_col);
         } else {
             if (is_lab) {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.48, .z = b.pos.z }, 5.4, 2.2, 5.4, rl.Color.init(45, 55, 68, 255));
@@ -2243,7 +2298,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
     const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
 
     for (buildings[0..buildings_count]) |b| {
-        if (b.state == .constructing) {
+        if (b.state == .constructing or b.state == .dismantling) {
             const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.6, .z = b.pos.z }, camera);
             if (screen_pos.x > -50 and screen_pos.x < sw + 50 and screen_pos.y > -50 and screen_pos.y < sh + 50) {
                 const bar_w: f32 = 110.0;
@@ -2252,6 +2307,9 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 const card_h: f32 = 42.0;
                 const card_y = screen_pos.y - card_h / 2.0;
                 const bar_y = card_y + 18.0;
+
+                const is_dismantling = (b.state == .dismantling);
+                const border_col = if (is_dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
 
                 // Card background
                 rl.drawRectangleRounded(
@@ -2265,17 +2323,26 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     0.25,
                     6,
                     1.2,
-                    COLOR_SCAFFOLDING,
+                    border_col,
                 );
 
                 // Title & percentage
-                const pct = @as(i32, @intFromFloat(b.progress * 100.0));
+                const pct = if (is_dismantling)
+                    @as(i32, @intFromFloat((1.0 - b.progress) * 100.0))
+                else
+                    @as(i32, @intFromFloat(b.progress * 100.0));
+
+                const title_text = if (is_dismantling)
+                    fmt("{s}: Demolish {d}%", .{ b.btype.name(), pct })
+                else
+                    fmt("{s}: {d}%", .{ b.btype.name(), pct });
+
                 rl.drawText(
-                    fmt("{s}: {d}%", .{ b.btype.name(), pct }),
+                    title_text,
                     @intFromFloat(bar_x),
                     @intFromFloat(card_y + 4),
                     11,
-                    rl.Color.init(245, 205, 70, 255),
+                    if (is_dismantling) rl.Color.init(255, 130, 110, 255) else rl.Color.init(245, 205, 70, 255),
                 );
 
                 // Progress Bar Background
@@ -2287,13 +2354,18 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     rl.Color.init(35, 40, 50, 255),
                 );
                 // Progress Bar Fill
-                const fill_w = bar_w * std.math.clamp(b.progress, 0.0, 1.0);
+                const progress_ratio = if (is_dismantling)
+                    std.math.clamp(1.0 - b.progress, 0.0, 1.0)
+                else
+                    std.math.clamp(b.progress, 0.0, 1.0);
+
+                const fill_w = bar_w * progress_ratio;
                 rl.drawRectangle(
                     @intFromFloat(bar_x),
                     @intFromFloat(bar_y),
                     @intFromFloat(fill_w),
                     @intFromFloat(bar_h),
-                    COLOR_SCAFFOLDING,
+                    border_col,
                 );
                 rl.drawRectangleLines(
                     @intFromFloat(bar_x),
@@ -2303,14 +2375,15 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     rl.Color.init(80, 95, 115, 255),
                 );
 
-                // Builder status
+                // Builder / worker status
                 if (b.active_builders > 0) {
+                    const worker_label = if (is_dismantling) "Workers" else "Builders";
                     rl.drawText(
-                        fmt("{d}/{d} Builders", .{ b.active_builders, b.btype.maxBuilders() }),
+                        fmt("{d}/{d} {s}", .{ b.active_builders, b.btype.maxBuilders(), worker_label }),
                         @intFromFloat(bar_x),
                         @intFromFloat(card_y + 30),
                         10,
-                        rl.Color.init(130, 225, 160, 255),
+                        if (is_dismantling) rl.Color.init(255, 170, 150, 255) else rl.Color.init(130, 225, 160, 255),
                     );
                 } else {
                     rl.drawText(
@@ -2332,12 +2405,19 @@ fn drawBuildingDialog(sw_f: f32) void {
             const b = buildings[bid];
             const is_lab = (b.btype == .lab);
             const panel_w: f32 = 250.0;
-            const panel_h: f32 = 175.0;
+            const panel_h: f32 = 188.0;
             const panel_x: f32 = sw_f - panel_w - 16.0;
             const panel_y: f32 = 46.0 + 14.0;
 
+            const border_color = if (b.state == .dismantling)
+                COLOR_DISMANTLE_SCAFFOLD
+            else if (is_lab)
+                rl.Color.init(65, 150, 195, 255)
+            else
+                rl.Color.init(184, 138, 72, 255);
+
             rl.drawRectangleRounded(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, rl.Color.init(20, 24, 32, 245));
-            rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, if (is_lab) rl.Color.init(65, 150, 195, 255) else rl.Color.init(184, 138, 72, 255));
+            rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, border_color);
 
             // Title icon + text
             rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, if (is_lab) COLOR_LAB_DOME else COLOR_WOOD_PILE);
@@ -2358,31 +2438,66 @@ fn drawBuildingDialog(sw_f: f32) void {
                 fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z });
             rl.drawText(subtitle, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
 
-            // Status
+            // Status & Info rows
             if (b.state == .completed) {
                 rl.drawText(if (is_lab) "STATUS: OPERATIONAL" else "STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
                 const cap_str = if (is_lab)
                     fmt("Staff Capacity: {d} Researchers", .{b.btype.capacity()})
                 else
                     fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
-                _ = rl.drawText(cap_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 76), 13, rl.Color.white);
+                _ = rl.drawText(cap_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
                 if (b.is_warm) {
-                    rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, COLOR_CITIZEN_WARM);
+                    rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, COLOR_CITIZEN_WARM);
                 } else {
-                    rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, rl.Color.init(110, 185, 255, 255));
+                    rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, rl.Color.init(110, 185, 255, 255));
                 }
-            } else {
+
+                // Action button: Destroy
+                if (!is_paused) {
+                    if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Destroy")) {
+                        buildings[bid].state = .dismantling;
+                        buildings[bid].progress = 1.0;
+                        buildings[bid].active_builders = 0;
+                        if (!hasCompletedLab() and research_menu_open) {
+                            research_menu_open = false;
+                        }
+                    }
+                }
+                rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
+            } else if (b.state == .constructing) {
                 rl.drawText("STATUS: UNDER CONSTRUCTION", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(245, 195, 65, 255));
                 const pct = @as(i32, @intFromFloat(b.progress * 100.0));
-                _ = rl.drawText(fmt("Progress: {d}%", .{pct}), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 76), 13, rl.Color.white);
-                _ = rl.drawText(fmt("Active Builders: {d}/{d}", .{ b.active_builders, b.btype.maxBuilders() }), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 98), 12, rl.Color.init(180, 200, 220, 255));
-            }
+                _ = rl.drawText(fmt("Progress: {d}%", .{pct}), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
+                _ = rl.drawText(fmt("Active Builders: {d}/{d}", .{ b.active_builders, b.btype.maxBuilders() }), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, rl.Color.init(180, 200, 220, 255));
 
-            const footer = if (is_lab)
-                "Enables research and technological advances"
-            else
-                "Protects citizens against the freezing cold";
-            rl.drawText(footer, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 135), 11, rl.Color.init(140, 155, 175, 255));
+                // Action button: Cancel
+                if (!is_paused) {
+                    if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Cancel")) {
+                        stockpiles[@intFromEnum(Resource.wood)] += b.btype.woodCost();
+                        removeBuilding(bid);
+                        selected_building = null;
+                        if (!hasCompletedLab() and research_menu_open) {
+                            research_menu_open = false;
+                        }
+                    }
+                }
+                rl.drawText("Canceling refunds all construction wood", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
+            } else if (b.state == .dismantling) {
+                rl.drawText("STATUS: DISMANTLING", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(245, 95, 75, 255));
+                const pct = @as(i32, @intFromFloat((1.0 - b.progress) * 100.0));
+                _ = rl.drawText(fmt("Dismantling: {d}%", .{pct}), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 74), 13, rl.Color.white);
+                _ = rl.drawText(fmt("Active Workers: {d}/{d}", .{ b.active_builders, b.btype.maxBuilders() }), @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 94), 12, rl.Color.init(255, 180, 160, 255));
+
+                // Action button: Cancel Dismantle
+                if (!is_paused) {
+                    if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Cancel Dismantle")) {
+                        buildings[bid].state = .completed;
+                        buildings[bid].progress = 1.0;
+                        buildings[bid].active_builders = 0;
+                    }
+                }
+                rl.drawText("Workers are tearing down the building", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
+            }
         }
     }
 }
@@ -2828,7 +2943,7 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     }
     var construction_workers: i32 = 0;
     for (buildings[0..buildings_count]) |b| {
-        if (b.state == .constructing) {
+        if (b.state == .constructing or b.state == .dismantling) {
             construction_workers += b.active_builders;
         }
     }
