@@ -753,10 +753,16 @@ var research_menu_open: bool = false;
 var active_research_tab: ResearchTab = .food;
 var greenhouses_research_state: ResearchState = .available;
 var greenhouses_research_progress: f32 = 0.0;
+var research_spinner_angle: f32 = 0.0;
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+pub const MAX_EFFECTIVE_RESEARCH_LABS: usize = 4;
+pub fn getMaxEffectiveResearchWorkers() i32 {
+    return @as(i32, @intCast(MAX_EFFECTIVE_RESEARCH_LABS)) * LAB_CAPACITY;
+}
 
 fn hasCompletedLab() bool {
     for (buildings[0..buildings_count]) |b| {
@@ -765,6 +771,17 @@ fn hasCompletedLab() bool {
         }
     }
     return false;
+}
+
+fn isResearchActive() bool {
+    return (greenhouses_research_state == .researching);
+}
+
+fn getActiveResearchProgress() f32 {
+    if (greenhouses_research_state == .researching) {
+        return std.math.clamp(greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION, 0.0, 1.0);
+    }
+    return 0.0;
 }
 
 fn getTotalLabWorkers() i32 {
@@ -776,6 +793,65 @@ fn getTotalLabWorkers() i32 {
     }
     return total;
 }
+
+fn getEffectiveResearchWorkers() i32 {
+    var lab_workers: [MAX_BUILDINGS]i32 = undefined;
+    var count: usize = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.btype == .lab and b.state == .completed) {
+            lab_workers[count] = b.assigned_workers;
+            count += 1;
+        }
+    }
+    if (count == 0) return 0;
+
+    // Sort descending to prioritize the highest staffed labs up to the 4-lab cap
+    if (count > 1) {
+        var i: usize = 0;
+        while (i < count - 1) : (i += 1) {
+            var j: usize = i + 1;
+            while (j < count) : (j += 1) {
+                if (lab_workers[j] > lab_workers[i]) {
+                    const temp = lab_workers[i];
+                    lab_workers[i] = lab_workers[j];
+                    lab_workers[j] = temp;
+                }
+            }
+        }
+    }
+
+    var total: i32 = 0;
+    const limit = @min(count, MAX_EFFECTIVE_RESEARCH_LABS);
+    for (lab_workers[0..limit]) |w| {
+        total += w;
+    }
+    return total;
+}
+
+fn getResearchSpeedMultiplier() f32 {
+    const eff = getEffectiveResearchWorkers();
+    return @as(f32, @floatFromInt(eff)) / @as(f32, @floatFromInt(LAB_CAPACITY));
+}
+
+fn getGreenhousesCardRect(strip_y: f32) rl.Rectangle {
+    return rl.Rectangle.init(16.0, strip_y + 44.0, 310.0, 92.0);
+}
+
+fn getGreenhousesCancelBtnRect(strip_y: f32) rl.Rectangle {
+    const card = getGreenhousesCardRect(strip_y);
+    const btn_w: f32 = 64.0;
+    const btn_h: f32 = 20.0;
+    return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
+}
+
+fn cancelOngoingResearch() void {
+    if (greenhouses_research_state == .researching) {
+        stockpiles[@intFromEnum(Resource.wood)] += GREENHOUSES_RESEARCH_WOOD_COST;
+        greenhouses_research_state = .available;
+        greenhouses_research_progress = 0.0;
+    }
+}
+
 
 fn assignGreenhouseWorkers(idx: usize, delta: i32) void {
     if (idx >= buildings_count) return;
@@ -1159,6 +1235,7 @@ fn initGame() void {
     active_research_tab = .food;
     greenhouses_research_state = .available;
     greenhouses_research_progress = 0.0;
+    research_spinner_angle = 0.0;
     placing_building = null;
     selected_building = null;
     hovered_building = null;
@@ -1718,14 +1795,22 @@ pub fn main() !void {
                         if (rl.checkCollisionPointRec(mouse_pos, badge_rect)) {
                             hovered_building = b.id;
                         }
+                        if (b.btype == .lab and isResearchActive()) {
+                            const spinner_rect = rl.Rectangle.init(screen_pos.x - 22.0, badge_rect.y - 58.0, 44.0, 58.0);
+                            if (rl.checkCollisionPointRec(mouse_pos, spinner_rect)) {
+                                hovered_building = b.id;
+                            }
+                        }
                     }
                 }
             }
 
+            const in_res_cancel = research_menu_open and active_research_tab == .food and greenhouses_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getGreenhousesCancelBtnRect(strip_y));
+
             // Set cursor style
             if (placing_building != null) {
                 rl.setMouseCursor(if (placement_check.valid) .crosshair else .not_allowed);
-            } else if (hovered_resource != null or hovered_generator or hovered_building != null or in_build_btn or in_research_btn or in_ctrl_btn or pop_hovered) {
+            } else if (hovered_resource != null or hovered_generator or hovered_building != null or in_build_btn or in_research_btn or in_ctrl_btn or pop_hovered or in_res_cancel) {
                 rl.setMouseCursor(.pointing_hand);
             } else {
                 rl.setMouseCursor(.default);
@@ -1852,14 +1937,19 @@ pub fn main() !void {
                         }
 
                         if (active_research_tab == .food) {
-                            const gh_card_rect = rl.Rectangle.init(16.0, strip_y + 44.0, 290.0, 92.0);
-                            if (rl.checkCollisionPointRec(mouse_pos, gh_card_rect)) {
-                                if (greenhouses_research_state == .available) {
+                            if (greenhouses_research_state == .available and !isResearchActive()) {
+                                const gh_card_rect = getGreenhousesCardRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, gh_card_rect)) {
                                     if (stockpiles[@intFromEnum(Resource.wood)] >= GREENHOUSES_RESEARCH_WOOD_COST and hasCompletedLab()) {
                                         stockpiles[@intFromEnum(Resource.wood)] -= GREENHOUSES_RESEARCH_WOOD_COST;
                                         greenhouses_research_state = .researching;
                                         greenhouses_research_progress = 0.0;
                                     }
+                                }
+                            } else if (greenhouses_research_state == .researching) {
+                                const cancel_btn_rect = getGreenhousesCancelBtnRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
+                                    cancelOngoingResearch();
                                 }
                             }
                         }
@@ -1902,17 +1992,17 @@ pub fn main() !void {
                 fuel_warning_timer -= dt;
             }
 
-            // Research progression (scales with total assigned lab workers)
+            // Research progression (scales with total assigned lab workers across up to 4 labs)
             if (greenhouses_research_state == .researching) {
-                const lab_workers = getTotalLabWorkers();
-                if (lab_workers > 0) {
-                    const speed = @as(f32, @floatFromInt(lab_workers)) / @as(f32, @floatFromInt(LAB_CAPACITY));
+                const speed = getResearchSpeedMultiplier();
+                if (speed > 0.0) {
                     greenhouses_research_progress += speed * dt;
                     if (greenhouses_research_progress >= GREENHOUSES_RESEARCH_DURATION) {
                         greenhouses_research_progress = GREENHOUSES_RESEARCH_DURATION;
                         greenhouses_research_state = .completed;
                     }
                 }
+
             }
 
             // 1. Generator coal fuel consumption
@@ -2729,6 +2819,38 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
     }
 }
 
+fn drawLabResearchSpinner(center: rl.Vector2, radius: f32, progress: f32, speed_mult: f32, is_paused_state: bool) void {
+    _ = is_paused_state;
+    const outer_r: f32 = radius;
+    const ring_w: f32 = 4.5;
+    const inner_r: f32 = outer_r - ring_w;
+
+    // 1. Dark circular disc background
+    rl.drawCircleV(center, outer_r + 2.0, rl.Color.init(14, 20, 30, 245));
+    rl.drawCircleLinesV(center, outer_r + 2.0, rl.Color.init(40, 65, 95, 200));
+
+    // 2. Base track (empty progress ring)
+    rl.drawRing(center, inner_r, outer_r, 0.0, 360.0, 48, rl.Color.init(24, 38, 55, 255));
+
+    // 3. Progress fill arc (clockwise from top / 12 o'clock, which is -90.0 degrees)
+    const fill_progress = std.math.clamp(progress, 0.0, 1.0);
+    if (fill_progress > 0.002) {
+        const start_deg: f32 = -90.0;
+        const end_deg: f32 = -90.0 + fill_progress * 360.0;
+        const fill_color = if (speed_mult > 0.0) rl.Color.init(55, 210, 255, 255) else rl.Color.init(245, 175, 60, 255);
+        rl.drawRing(center, inner_r, outer_r, start_deg, end_deg, 48, fill_color);
+    }
+
+    // 4. Center text: Percentage
+    const pct_val = @as(i32, @intFromFloat(fill_progress * 100.0));
+    const pct_text = fmt("{d}%", .{pct_val});
+    const font_size: i32 = if (pct_val >= 100) 9 else 10;
+    const tw = rl.measureText(pct_text, font_size);
+    const tx = @as(i32, @intFromFloat(center.x)) - @divTrunc(tw, 2);
+    const ty = @as(i32, @intFromFloat(center.y)) - @divTrunc(font_size, 2);
+    rl.drawText(pct_text, tx, ty, font_size, rl.Color.white);
+}
+
 fn drawBuildingLabels(camera: rl.Camera3D) void {
     const sw = @as(f32, @floatFromInt(rl.getScreenWidth()));
     const sh = @as(f32, @floatFromInt(rl.getScreenHeight()));
@@ -2906,6 +3028,39 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     9,
                     if (is_selected) rl.Color.init(245, 205, 70, 255) else if (is_hovered) rl.Color.init(255, 215, 80, 255) else rl.Color.init(130, 150, 175, 255),
                 );
+
+                // For completed Labs when research is active: draw the circular progress bar & spinner above the badge
+                if (b.btype == .lab and isResearchActive()) {
+                    const spinner_center = rl.Vector2{ .x = screen_pos.x, .y = br.y - 25.0 };
+                    const progress = getActiveResearchProgress();
+                    const speed_mult = getResearchSpeedMultiplier();
+
+                    // Connecting vertical line to badge
+                    rl.drawLineEx(
+                        .{ .x = screen_pos.x, .y = br.y - 7.0 },
+                        .{ .x = screen_pos.x, .y = br.y },
+                        2.0,
+                        if (is_hovered or is_selected) rl.Color.init(255, 215, 80, 255) else rl.Color.init(65, 150, 195, 220),
+                    );
+
+                    // Top status pill
+                    const res_label = if (speed_mult > 0.0) "RESEARCHING" else "PAUSED";
+                    const rlw = rl.measureText(res_label, 9);
+                    const pill_w: f32 = @as(f32, @floatFromInt(rlw)) + 12.0;
+                    const pill_x = screen_pos.x - pill_w / 2.0;
+                    const pill_y = br.y - 56.0;
+                    rl.drawRectangle(@intFromFloat(pill_x), @intFromFloat(pill_y), @intFromFloat(pill_w), 13, rl.Color.init(15, 22, 32, 230));
+                    rl.drawRectangleLines(@intFromFloat(pill_x), @intFromFloat(pill_y), @intFromFloat(pill_w), 13, if (speed_mult > 0.0) rl.Color.init(60, 180, 230, 200) else rl.Color.init(245, 120, 100, 200));
+                    rl.drawText(
+                        res_label,
+                        @intFromFloat(screen_pos.x - @as(f32, @floatFromInt(rlw)) / 2.0),
+                        @intFromFloat(pill_y + 2.0),
+                        9,
+                        if (speed_mult > 0.0) rl.Color.init(130, 230, 255, 255) else rl.Color.init(255, 130, 110, 255),
+                    );
+
+                    drawLabResearchSpinner(spinner_center, 18.0, progress, speed_mult, is_paused);
+                }
             }
         }
     }
@@ -3024,20 +3179,35 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                     }
                     rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
                 } else if (is_lab) {
-                    const status_str = if (b.assigned_workers >= LAB_CAPACITY)
-                        "STATUS: FULL RESEARCH"
-                    else if (b.assigned_workers > 0)
-                        "STATUS: RESEARCHING"
+                    const is_active_res = isResearchActive();
+                    const speed_mult = getResearchSpeedMultiplier();
+                    const status_str = if (!is_active_res)
+                        "STATUS: IDLE (NO RESEARCH)"
+                    else if (speed_mult > 0.0)
+                        (if (b.assigned_workers >= LAB_CAPACITY) "STATUS: FULL RESEARCH" else "STATUS: RESEARCHING")
                     else
                         "STATUS: UNSTAFFED (HALTED)";
-                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 225, 255, 255) else rl.Color.init(245, 195, 65, 255));
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (speed_mult > 0.0 and is_active_res) rl.Color.init(100, 225, 255, 255) else rl.Color.init(245, 195, 65, 255));
 
                     const staff_str = fmt("Staff: {d} / {d} Researchers", .{ b.assigned_workers, LAB_CAPACITY });
                     rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
 
-                    const speed_pct = @as(i32, @intCast(b.assigned_workers)) * 10;
-                    const speed_str = fmt("Research Speed: {d}%", .{speed_pct});
-                    rl.drawText(speed_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, if (b.assigned_workers > 0) rl.Color.init(130, 230, 255, 255) else rl.Color.init(255, 120, 100, 255));
+                    const speed_pct = @as(i32, @intFromFloat(speed_mult * 100.0));
+                    const total_lab_staff = getTotalLabWorkers();
+                    const speed_str = if (is_active_res)
+                        (if (total_lab_staff > getMaxEffectiveResearchWorkers())
+                            fmt("Colony Speed: {d}% (Cap 4 Labs)", .{speed_pct})
+                        else
+                            fmt("Colony Speed: {d}%", .{speed_pct}))
+                    else
+                        "Colony Speed: 0% (Idle)";
+                    rl.drawText(speed_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, if (speed_mult > 0.0 and is_active_res) rl.Color.init(130, 230, 255, 255) else rl.Color.init(255, 120, 100, 255));
+
+                    // Draw the circular research spinner inside the dialog card when research is active
+                    if (is_active_res) {
+                        const dlg_spinner_center = rl.Vector2{ .x = panel_x + panel_w - 44.0, .y = panel_y + 68.0 };
+                        drawLabResearchSpinner(dlg_spinner_center, 18.0, getActiveResearchProgress(), speed_mult, is_paused);
+                    }
 
                     // Worker control buttons: None, -1, +1, Max
                     if (!is_paused) {
@@ -3602,28 +3772,28 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
             rl.drawText("[COMING SOON]", @intFromFloat(card2_x + 56), @intFromFloat(card2_y + 71), 10, rl.Color.init(140, 190, 220, 255));
         } else if (active_research_tab == .food) {
             // Greenhouses Research Card
-            const card_x: f32 = 16.0;
-            const card_y: f32 = strip_y + 44.0;
-            const card_w: f32 = 290.0;
-            const card_h: f32 = 92.0;
-            const card_rect = rl.Rectangle.init(card_x, card_y, card_w, card_h);
-            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect);
+            const card_rect = getGreenhousesCardRect(strip_y);
+            const card_x: f32 = card_rect.x;
+            const card_y: f32 = card_rect.y;
+            const cancel_btn_rect = getGreenhousesCancelBtnRect(strip_y);
+            const cancel_hovered = (greenhouses_research_state == .researching) and rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect);
+            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect) and !cancel_hovered;
 
             const current_wood = stockpiles[@intFromEnum(Resource.wood)];
             const can_afford = current_wood >= GREENHOUSES_RESEARCH_WOOD_COST;
 
-            const card_bg = if (card_hovered)
+            const card_bg = if (card_hovered and greenhouses_research_state == .available)
                 rl.Color.init(25, 48, 38, 255)
             else
                 rl.Color.init(18, 32, 26, 240);
 
-            const card_border = if (card_hovered)
+            const card_border = if (card_hovered and greenhouses_research_state == .available)
                 rl.Color.init(100, 225, 140, 255)
             else
                 rl.Color.init(50, 95, 68, 255);
 
             rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
-            rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered) 2.0 else 1.2, card_border);
+            rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered and greenhouses_research_state == .available) 2.0 else 1.2, card_border);
 
             // Icon: Greenery sprout symbol
             rl.drawRectangle(@intFromFloat(card_x + 12), @intFromFloat(card_y + 12), 26, 26, rl.Color.init(25, 65, 40, 255));
@@ -3645,21 +3815,26 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 rl.drawText(if (can_afford) "Click to Research (20 Wood)" else "Need 20 Wood to Research", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, if (can_afford) rl.Color.white else rl.Color.init(255, 130, 130, 255));
             } else if (greenhouses_research_state == .researching) {
                 const total_researchers = getTotalLabWorkers();
-                const pct = greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION;
-                if (total_researchers > 0) {
-                    const speed_mult = @as(f32, @floatFromInt(total_researchers)) / @as(f32, @floatFromInt(LAB_CAPACITY));
+                const pct = getActiveResearchProgress();
+                const speed_mult = getResearchSpeedMultiplier();
+                if (speed_mult > 0.0) {
                     const rem_sec_f = (GREENHOUSES_RESEARCH_DURATION - greenhouses_research_progress) / speed_mult;
                     const rem = @max(0, @as(i32, @intFromFloat(rem_sec_f)));
                     const rem_min = @divTrunc(rem, 60);
                     const rem_sec = @rem(rem, 60);
 
+                    const speed_pct = @as(i32, @intFromFloat(speed_mult * 100.0));
+                    const staff_info = if (total_researchers > getMaxEffectiveResearchWorkers())
+                        fmt("{d} Staff (Cap 4 Labs), {d}%", .{ total_researchers, speed_pct })
+                    else
+                        fmt("{d} Staff, {d}%", .{ total_researchers, speed_pct });
+
                     _ = rl.drawText(
-                        fmt("Researching: {d}% | {d}m {d:0>2}s left ({d} Staff, {d}%)", .{
+                        fmt("Researching: {d}% | ~{d}m {d:0>2}s left ({s})", .{
                             @as(i32, @intFromFloat(pct * 100.0)),
                             rem_min,
                             rem_sec,
-                            total_researchers,
-                            @as(i32, @intFromFloat(speed_mult * 100.0)),
+                            staff_info,
                         }),
                         @intFromFloat(card_x + 48),
                         @intFromFloat(card_y + 46),
@@ -3668,7 +3843,7 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                     );
                 } else {
                     _ = rl.drawText(
-                        fmt("PAUSED: 0 Staff in Lab (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
+                        fmt("PAUSED: 0 Staff in Labs (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
                         @intFromFloat(card_x + 48),
                         @intFromFloat(card_y + 46),
                         11,
@@ -3677,13 +3852,21 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 }
 
                 // Progress Bar
-                const bar_w: f32 = 220.0;
+                const bar_x: f32 = card_x + 48.0;
+                const bar_y: f32 = card_y + 66.0;
+                const bar_w: f32 = cancel_btn_rect.x - 10.0 - bar_x;
                 const bar_h: f32 = 14.0;
-                const bar_x: f32 = card_x + 48;
-                const bar_y: f32 = card_y + 66;
                 rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
                 rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
                 rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, if (total_researchers > 0) rl.Color.init(60, 210, 140, 255) else rl.Color.init(180, 80, 70, 255));
+
+                // Cancel Button
+                rl.drawRectangleRounded(cancel_btn_rect, 0.3, 4, if (cancel_hovered) rl.Color.init(170, 40, 45, 255) else rl.Color.init(55, 25, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cancel_btn_rect, 0.3, 4, 1.0, if (cancel_hovered) rl.Color.init(255, 110, 110, 255) else rl.Color.init(180, 60, 65, 255));
+                const cancel_tw = rl.measureText("Cancel", 11);
+                const cancel_tx = @as(i32, @intFromFloat(cancel_btn_rect.x + (cancel_btn_rect.width - @as(f32, @floatFromInt(cancel_tw))) / 2.0));
+                const cancel_ty = @as(i32, @intFromFloat(cancel_btn_rect.y + 4.5));
+                rl.drawText("Cancel", cancel_tx, cancel_ty, 11, if (cancel_hovered) rl.Color.white else rl.Color.init(255, 180, 180, 255));
             } else if (greenhouses_research_state == .completed) {
                 rl.drawText("Unlocks 2x4 Greenhouse building", @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(180, 215, 190, 255));
 
