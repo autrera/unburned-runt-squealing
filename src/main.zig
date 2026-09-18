@@ -1839,7 +1839,8 @@ pub fn main() !void {
                                     };
                                     buildings_count += 1;
                                 }
-                                if (!rl.isKeyDown(.left_shift) and !rl.isKeyDown(.right_shift)) {
+                                const keep_building = rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift);
+                                if (!keep_building or stockpiles[@intFromEnum(Resource.wood)] < btype.woodCost() or buildings_count >= MAX_BUILDINGS) {
                                     placing_building = null;
                                 }
                             }
@@ -3919,7 +3920,7 @@ fn drawPlacementTooltip(mouse_pos: rl.Vector2, btype: BuildingType, check: Place
     const tip_y: i32 = @as(i32, @intFromFloat(mouse_pos.y)) + 16;
 
     const text = if (check.valid)
-        fmt("[LMB] Place {s} ({d}x{d} Grid, {d} Wood) | [RMB/Esc] Cancel", .{
+        fmt("[LMB] Place {s} ({d}x{d}, {d} Wood) | [Shift+LMB] Multiple | [RMB/Esc] Cancel", .{
             btype.name(),
             btype.gridWidth(),
             btype.gridLength(),
@@ -4693,9 +4694,9 @@ fn drawControlsDialog() void {
     y1 += 22.0;
     drawControlRow(col1_x, y1, "B / Build Button", "Open or close Build Menu");
     y1 += 22.0;
-    drawControlRow(col1_x, y1, "LMB (House)", "Place 2x2 House (20 Wood)");
+    drawControlRow(col1_x, y1, "LMB", "Place building on grid");
     y1 += 22.0;
-    drawControlRow(col1_x, y1, "Shift + LMB", "Place multiple houses");
+    drawControlRow(col1_x, y1, "Shift + LMB", "Place multiple buildings");
     y1 += 22.0;
     drawControlRow(col1_x, y1, "RMB / ESC", "Cancel placement mode");
 
