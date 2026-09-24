@@ -201,6 +201,34 @@ pub var COAL_MINE_GATHER_RATE_MULTIPLIER: f32 = 2.0;
 /// Coal generated per worker per second in a Coal Mine (double the coal of a coal pile: 0.40 * 2.0 = 0.80 coal/sec)
 pub var COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC: f32 = 0.80;
 
+/// Width in grid squares for a Wood Shack (4 squares = 8.0 world units)
+pub var WOOD_SHACK_GRID_WIDTH: i32 = 4;
+/// Length in grid squares for a Wood Shack (4 squares = 8.0 world units)
+pub var WOOD_SHACK_GRID_LENGTH: i32 = 4;
+
+/// Wood cost required to construct one Wood Shack
+pub var WOOD_SHACK_WOOD_COST: f32 = 100.0;
+/// Steel cost required to construct one Wood Shack
+pub var WOOD_SHACK_STEEL_COST: f32 = 50.0;
+/// Worker capacity for a completed Wood Shack
+pub var WOOD_SHACK_CAPACITY: i32 = 10;
+/// Base construction duration in seconds when built by maximum workers
+pub var WOOD_SHACK_BASE_BUILD_TIME: f32 = 25.0;
+/// Maximum number of idle workers that can simultaneously construct a single Wood Shack
+pub var WOOD_SHACK_MAX_BUILDERS: i32 = 10;
+/// Clearance collision radius around a Wood Shack in world units
+pub var WOOD_SHACK_COLLISION_RADIUS: f32 = 5.8;
+
+/// Wood cost required to research Wood Shack in the Lab
+pub var WOOD_SHACK_RESEARCH_WOOD_COST: f32 = 25.0;
+/// Steel cost required to research Wood Shack in the Lab
+pub var WOOD_SHACK_RESEARCH_STEEL_COST: f32 = 25.0;
+/// Research duration in seconds for Wood Shack (2 minutes = 120 seconds)
+pub var WOOD_SHACK_RESEARCH_DURATION: f32 = 120.0;
+
+/// Wood generated per worker per second in a Wood Shack (10 workers = 10 wood/sec)
+pub var WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC: f32 = 1.0;
+
 /// Maximum number of placed buildings in the settlement
 pub const MAX_BUILDINGS: usize = 128;
 
@@ -235,6 +263,12 @@ pub var COLOR_COAL_MINE_HEADFRAME: rl.Color = rl.Color.init(72, 58, 48, 255); //
 pub var COLOR_COAL_MINE_CHIMNEY: rl.Color = rl.Color.init(60, 38, 32, 255); // Industrial soot-stained smokestack
 pub var COLOR_COAL_MINE_CHUTE: rl.Color = rl.Color.init(55, 60, 70, 255); // Heavy iron ore chute
 pub var COLOR_COAL_MINE_WHEEL: rl.Color = rl.Color.init(115, 125, 140, 255); // Pithead winding gear wheel
+pub var COLOR_WOOD_SHACK_WALLS: rl.Color = rl.Color.init(125, 82, 48, 255); // Rich rustic log walls
+pub var COLOR_WOOD_SHACK_ROOF: rl.Color = rl.Color.init(78, 52, 34, 255); // Dark weathered timber shingle roof
+pub var COLOR_WOOD_SHACK_FOUNDATION: rl.Color = rl.Color.init(52, 48, 44, 255); // Heavy stone foundation
+pub var COLOR_WOOD_SHACK_LOGS: rl.Color = rl.Color.init(155, 105, 62, 255); // Freshly harvested timber logs
+pub var COLOR_WOOD_SHACK_CHIMNEY: rl.Color = rl.Color.init(65, 62, 58, 255); // Cast iron stovepipe
+pub var COLOR_WOOD_SHACK_PLANKS: rl.Color = rl.Color.init(175, 125, 78, 255); // Sawn timber planks
 pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
 pub var COLOR_DISMANTLE_SCAFFOLD: rl.Color = rl.Color.init(205, 80, 60, 255); // Demolition/dismantling scaffolding frame
 pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
@@ -324,10 +358,11 @@ pub const CitizenRole = enum {
     working_greenhouse,
     working_lab,
     working_coal_mine,
+    working_wood_shack,
 
     pub fn toResource(self: CitizenRole) ?Resource {
         return switch (self) {
-            .idle, .working_greenhouse, .working_lab, .working_coal_mine => null,
+            .idle, .working_greenhouse, .working_lab, .working_coal_mine, .working_wood_shack => null,
             .gathering_coal => .coal,
             .gathering_wood => .wood,
             .gathering_steel => .steel,
@@ -350,6 +385,7 @@ pub const BuildingType = enum(usize) {
     lab = 1,
     greenhouse = 2,
     coal_mine = 3,
+    wood_shack = 4,
 
     pub fn name(self: BuildingType) [:0]const u8 {
         return switch (self) {
@@ -357,6 +393,7 @@ pub const BuildingType = enum(usize) {
             .lab => "Lab",
             .greenhouse => "Greenhouse",
             .coal_mine => "Coal Mine",
+            .wood_shack => "Wood Shack",
         };
     }
 
@@ -366,6 +403,14 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_WOOD_COST,
             .greenhouse => GREENHOUSE_WOOD_COST,
             .coal_mine => COAL_MINE_WOOD_COST,
+            .wood_shack => WOOD_SHACK_WOOD_COST,
+        };
+    }
+
+    pub fn steelCost(self: BuildingType) f32 {
+        return switch (self) {
+            .house, .lab, .greenhouse, .coal_mine => 0.0,
+            .wood_shack => WOOD_SHACK_STEEL_COST,
         };
     }
 
@@ -375,6 +420,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_CAPACITY,
             .greenhouse => GREENHOUSE_CAPACITY,
             .coal_mine => COAL_MINE_CAPACITY,
+            .wood_shack => WOOD_SHACK_CAPACITY,
         };
     }
 
@@ -384,6 +430,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_MAX_BUILDERS,
             .greenhouse => GREENHOUSE_MAX_BUILDERS,
             .coal_mine => COAL_MINE_MAX_BUILDERS,
+            .wood_shack => WOOD_SHACK_MAX_BUILDERS,
         };
     }
 
@@ -393,6 +440,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_BASE_BUILD_TIME,
             .greenhouse => GREENHOUSE_BASE_BUILD_TIME,
             .coal_mine => COAL_MINE_BASE_BUILD_TIME,
+            .wood_shack => WOOD_SHACK_BASE_BUILD_TIME,
         };
     }
 
@@ -402,6 +450,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_GRID_WIDTH,
             .greenhouse => GREENHOUSE_GRID_WIDTH,
             .coal_mine => COAL_MINE_GRID_WIDTH,
+            .wood_shack => WOOD_SHACK_GRID_WIDTH,
         };
     }
 
@@ -411,6 +460,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_GRID_LENGTH,
             .greenhouse => GREENHOUSE_GRID_LENGTH,
             .coal_mine => COAL_MINE_GRID_LENGTH,
+            .wood_shack => WOOD_SHACK_GRID_LENGTH,
         };
     }
 
@@ -420,6 +470,7 @@ pub const BuildingType = enum(usize) {
             .lab => LAB_COLLISION_RADIUS,
             .greenhouse => GREENHOUSE_COLLISION_RADIUS,
             .coal_mine => COAL_MINE_COLLISION_RADIUS,
+            .wood_shack => WOOD_SHACK_COLLISION_RADIUS,
         };
     }
 };
@@ -836,6 +887,8 @@ var greenhouses_research_state: ResearchState = .available;
 var greenhouses_research_progress: f32 = 0.0;
 var coal_mine_research_state: ResearchState = .available;
 var coal_mine_research_progress: f32 = 0.0;
+var wood_shack_research_state: ResearchState = .available;
+var wood_shack_research_progress: f32 = 0.0;
 var research_spinner_angle: f32 = 0.0;
 
 // ============================================================================
@@ -857,7 +910,7 @@ fn hasCompletedLab() bool {
 }
 
 fn isResearchActive() bool {
-    return (greenhouses_research_state == .researching or coal_mine_research_state == .researching);
+    return (greenhouses_research_state == .researching or coal_mine_research_state == .researching or wood_shack_research_state == .researching);
 }
 
 fn getActiveResearchProgress() f32 {
@@ -865,6 +918,8 @@ fn getActiveResearchProgress() f32 {
         return std.math.clamp(greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION, 0.0, 1.0);
     } else if (coal_mine_research_state == .researching) {
         return std.math.clamp(coal_mine_research_progress / COAL_MINE_RESEARCH_DURATION, 0.0, 1.0);
+    } else if (wood_shack_research_state == .researching) {
+        return std.math.clamp(wood_shack_research_progress / WOOD_SHACK_RESEARCH_DURATION, 0.0, 1.0);
     }
     return 0.0;
 }
@@ -940,6 +995,17 @@ fn getCoalMineCancelBtnRect(strip_y: f32) rl.Rectangle {
     return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
 }
 
+fn getWoodShackCardRect(strip_y: f32) rl.Rectangle {
+    return rl.Rectangle.init(338.0, strip_y + 44.0, 310.0, 92.0);
+}
+
+fn getWoodShackCancelBtnRect(strip_y: f32) rl.Rectangle {
+    const card = getWoodShackCardRect(strip_y);
+    const btn_w: f32 = 64.0;
+    const btn_h: f32 = 20.0;
+    return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
+}
+
 fn cancelOngoingResearch() void {
     if (greenhouses_research_state == .researching) {
         stockpiles[@intFromEnum(Resource.wood)] += GREENHOUSES_RESEARCH_WOOD_COST;
@@ -950,6 +1016,11 @@ fn cancelOngoingResearch() void {
         stockpiles[@intFromEnum(Resource.steel)] += COAL_MINE_RESEARCH_STEEL_COST;
         coal_mine_research_state = .available;
         coal_mine_research_progress = 0.0;
+    } else if (wood_shack_research_state == .researching) {
+        stockpiles[@intFromEnum(Resource.wood)] += WOOD_SHACK_RESEARCH_WOOD_COST;
+        stockpiles[@intFromEnum(Resource.steel)] += WOOD_SHACK_RESEARCH_STEEL_COST;
+        wood_shack_research_state = .available;
+        wood_shack_research_progress = 0.0;
     }
 }
 
@@ -1116,6 +1187,60 @@ fn assignCoalMineWorkers(idx: usize, delta: i32) void {
     }
 }
 
+fn assignWoodShackWorkers(idx: usize, delta: i32) void {
+    if (idx >= buildings_count) return;
+    var b = &buildings[idx];
+    if (b.btype != .wood_shack or b.state != .completed) return;
+
+    if (delta > 0) {
+        const can_add = @min(delta, @as(i32, @intCast(citizen_mgr.getIdleCount())));
+        const space = WOOD_SHACK_CAPACITY - b.assigned_workers;
+        const to_add = @min(can_add, space);
+        var added: i32 = 0;
+        while (added < to_add) : (added += 1) {
+            if (citizen_mgr.idle_count == 0) break;
+            citizen_mgr.idle_count -= 1;
+            const id = citizen_mgr.idle_ids[citizen_mgr.idle_count];
+            citizen_mgr.role[id] = .working_wood_shack;
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(2.0, 4.5);
+            citizen_mgr.target_x[id] = b.pos.x + @cos(angle) * dist;
+            citizen_mgr.target_z[id] = b.pos.z + @sin(angle) * dist;
+            citizen_mgr.wander_timer[id] = randomFloat(2.0, 5.0);
+            b.assigned_workers += 1;
+        }
+    } else if (delta < 0) {
+        const to_remove = @min(-delta, b.assigned_workers);
+        var removed: i32 = 0;
+        while (removed < to_remove) : (removed += 1) {
+            var closest_id: ?usize = null;
+            var min_dist_sq: f32 = std.math.floatMax(f32);
+            for (0..citizen_mgr.count) |i| {
+                if (citizen_mgr.role[i] == .working_wood_shack) {
+                    const dx = citizen_mgr.pos_x[i] - b.pos.x;
+                    const dz = citizen_mgr.pos_z[i] - b.pos.z;
+                    const d_sq = dx * dx + dz * dz;
+                    if (d_sq < min_dist_sq) {
+                        min_dist_sq = d_sq;
+                        closest_id = i;
+                    }
+                }
+            }
+            if (closest_id) |cid| {
+                citizen_mgr.role[cid] = .idle;
+                citizen_mgr.idle_ids[citizen_mgr.idle_count] = @intCast(cid);
+                citizen_mgr.idle_count += 1;
+                const tgt = pickTargetForRole(.idle);
+                citizen_mgr.target_x[cid] = tgt.x;
+                citizen_mgr.target_z[cid] = tgt.z;
+                b.assigned_workers -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn removeBuilding(idx: usize) void {
     if (idx >= buildings_count) return;
     if (buildings[idx].btype == .greenhouse and buildings[idx].assigned_workers > 0) {
@@ -1126,6 +1251,9 @@ fn removeBuilding(idx: usize) void {
     }
     if (buildings[idx].btype == .coal_mine and buildings[idx].assigned_workers > 0) {
         assignCoalMineWorkers(idx, -buildings[idx].assigned_workers);
+    }
+    if (buildings[idx].btype == .wood_shack and buildings[idx].assigned_workers > 0) {
+        assignWoodShackWorkers(idx, -buildings[idx].assigned_workers);
     }
     var i = idx;
     while (i + 1 < buildings_count) : (i += 1) {
@@ -1290,9 +1418,12 @@ fn canPlaceBuildingAtGrid(gx: i32, gz: i32, btype: BuildingType) PlacementCheck 
         return .{ .valid = false, .reason = "Beyond city boundary" };
     }
 
-    // 5. Wood cost check
+    // 5. Wood and Steel cost check
     if (stockpiles[@intFromEnum(Resource.wood)] < btype.woodCost()) {
         return .{ .valid = false, .reason = "Insufficient Wood" };
+    }
+    if (stockpiles[@intFromEnum(Resource.steel)] < btype.steelCost()) {
+        return .{ .valid = false, .reason = "Insufficient Steel" };
     }
 
     return .{ .valid = true, .reason = "Click to Place" };
@@ -1341,6 +1472,25 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
     } else if (role == .working_coal_mine) {
         for (buildings[0..buildings_count]) |b| {
             if (b.btype == .coal_mine and b.state == .completed and b.assigned_workers > 0) {
+                const angle = randomFloat(0.0, std.math.pi * 2.0);
+                const dist = randomFloat(2.0, 4.5);
+                return .{
+                    .x = b.pos.x + @cos(angle) * dist,
+                    .y = 0.0,
+                    .z = b.pos.z + @sin(angle) * dist,
+                };
+            }
+        }
+        const angle = randomFloat(0.0, std.math.pi * 2.0);
+        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+        return .{
+            .x = @cos(angle) * dist,
+            .y = 0.0,
+            .z = @sin(angle) * dist,
+        };
+    } else if (role == .working_wood_shack) {
+        for (buildings[0..buildings_count]) |b| {
+            if (b.btype == .wood_shack and b.state == .completed and b.assigned_workers > 0) {
                 const angle = randomFloat(0.0, std.math.pi * 2.0);
                 const dist = randomFloat(2.0, 4.5);
                 return .{
@@ -1430,6 +1580,8 @@ fn initGame() void {
     greenhouses_research_progress = 0.0;
     coal_mine_research_state = .available;
     coal_mine_research_progress = 0.0;
+    wood_shack_research_state = .available;
+    wood_shack_research_progress = 0.0;
     research_spinner_angle = 0.0;
     placing_building = null;
     selected_building = null;
@@ -1500,7 +1652,7 @@ fn getBuildingDialogRect(b: Building, camera: rl.Camera3D, sw: f32, sh: f32) ?rl
         return null;
     }
 
-    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine);
+    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack);
     const card_w: f32 = 250.0;
     const card_h: f32 = if (is_worker_facility and b.state == .completed) 226.0 else 188.0;
 
@@ -1903,6 +2055,16 @@ pub fn main() !void {
                         } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
                             assignCoalMineWorkers(s_bid, COAL_MINE_CAPACITY);
                         }
+                    } else if (buildings[s_bid].btype == .wood_shack) {
+                        if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                            assignWoodShackWorkers(s_bid, 1);
+                        } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                            assignWoodShackWorkers(s_bid, -1);
+                        } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                            assignWoodShackWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                        } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                            assignWoodShackWorkers(s_bid, WOOD_SHACK_CAPACITY);
+                        }
                     }
                 }
             }
@@ -2006,8 +2168,8 @@ pub fn main() !void {
                     if (hit.hit) {
                         hovered_building = b.id;
                     }
-                    // Also check collision against floating badge for completed Greenhouse, Lab & Coal Mine (when not selected)
-                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine)) {
+                    // Also check collision against floating badge for completed Greenhouse, Lab, Coal Mine & Wood Shack (when not selected)
+                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack)) {
                         const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
                         const badge_rect = rl.Rectangle.init(screen_pos.x - 175.0 / 2.0, screen_pos.y - 28.0 / 2.0, 175.0, 28.0);
                         if (rl.checkCollisionPointRec(mouse_pos, badge_rect)) {
@@ -2025,7 +2187,8 @@ pub fn main() !void {
 
             const in_res_cancel = research_menu_open and (
                 (active_research_tab == .food and greenhouses_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getGreenhousesCancelBtnRect(strip_y))) or
-                (active_research_tab == .resources and coal_mine_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getCoalMineCancelBtnRect(strip_y)))
+                (active_research_tab == .resources and coal_mine_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getCoalMineCancelBtnRect(strip_y))) or
+                (active_research_tab == .resources and wood_shack_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getWoodShackCancelBtnRect(strip_y)))
             );
 
             // Set cursor style
@@ -2044,6 +2207,7 @@ pub fn main() !void {
                         if (snapped_grid) |snapped| {
                             if (placement_check.valid) {
                                 stockpiles[@intFromEnum(Resource.wood)] -= btype.woodCost();
+                                stockpiles[@intFromEnum(Resource.steel)] -= btype.steelCost();
                                 if (buildings_count < MAX_BUILDINGS) {
                                     const center_pos = gridToWorldCenter(snapped.gx, snapped.gz, btype.gridWidth(), btype.gridLength());
                                     buildings[buildings_count] = .{
@@ -2061,7 +2225,7 @@ pub fn main() !void {
                                     buildings_count += 1;
                                 }
                                 const keep_building = rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift);
-                                if (!keep_building or stockpiles[@intFromEnum(Resource.wood)] < btype.woodCost() or buildings_count >= MAX_BUILDINGS) {
+                                if (!keep_building or stockpiles[@intFromEnum(Resource.wood)] < btype.woodCost() or stockpiles[@intFromEnum(Resource.steel)] < btype.steelCost() or buildings_count >= MAX_BUILDINGS) {
                                     placing_building = null;
                                 }
                             }
@@ -2153,6 +2317,16 @@ pub fn main() !void {
                                     }
                                 }
                             }
+                            if (wood_shack_research_state == .completed) {
+                                const ws_card_rect = rl.Rectangle.init(280.0, strip_y + 44.0, 260.0, 92.0);
+                                if (rl.checkCollisionPointRec(mouse_pos, ws_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.wood_shack.woodCost() and
+                                        stockpiles[@intFromEnum(Resource.steel)] >= BuildingType.wood_shack.steelCost()) {
+                                        placing_building = .wood_shack;
+                                        build_menu_open = false;
+                                    }
+                                }
+                            }
                         }
                     } else if (in_research_strip) {
                         // Check close button [x]
@@ -2205,6 +2379,25 @@ pub fn main() !void {
                                 }
                             } else if (coal_mine_research_state == .researching) {
                                 const cancel_btn_rect = getCoalMineCancelBtnRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
+                                    cancelOngoingResearch();
+                                }
+                            }
+
+                            if (wood_shack_research_state == .available and !isResearchActive()) {
+                                const ws_card_rect = getWoodShackCardRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, ws_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= WOOD_SHACK_RESEARCH_WOOD_COST and
+                                        stockpiles[@intFromEnum(Resource.steel)] >= WOOD_SHACK_RESEARCH_STEEL_COST and
+                                        hasCompletedLab()) {
+                                        stockpiles[@intFromEnum(Resource.wood)] -= WOOD_SHACK_RESEARCH_WOOD_COST;
+                                        stockpiles[@intFromEnum(Resource.steel)] -= WOOD_SHACK_RESEARCH_STEEL_COST;
+                                        wood_shack_research_state = .researching;
+                                        wood_shack_research_progress = 0.0;
+                                    }
+                                }
+                            } else if (wood_shack_research_state == .researching) {
+                                const cancel_btn_rect = getWoodShackCancelBtnRect(strip_y);
                                 if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
                                     cancelOngoingResearch();
                                 }
@@ -2268,6 +2461,15 @@ pub fn main() !void {
                         coal_mine_research_state = .completed;
                     }
                 }
+            } else if (wood_shack_research_state == .researching) {
+                const speed = getResearchSpeedMultiplier();
+                if (speed > 0.0) {
+                    wood_shack_research_progress += speed * dt;
+                    if (wood_shack_research_progress >= WOOD_SHACK_RESEARCH_DURATION) {
+                        wood_shack_research_progress = WOOD_SHACK_RESEARCH_DURATION;
+                        wood_shack_research_state = .completed;
+                    }
+                }
             }
 
             // 1. Generator coal fuel consumption
@@ -2302,7 +2504,7 @@ pub fn main() !void {
                 }
             }
 
-            // 2b. Greenhouse Food Production (produces 10 Food/sec with 10 workers)
+            // 2b. Greenhouse Food, Coal Mine Coal, and Wood Shack Wood Production
             for (buildings[0..buildings_count]) |*b| {
                 if (b.state == .completed and b.btype == .greenhouse) {
                     if (b.assigned_workers > 0) {
@@ -2313,6 +2515,11 @@ pub fn main() !void {
                     if (b.assigned_workers > 0) {
                         const coal_rate = @as(f32, @floatFromInt(b.assigned_workers)) * COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC;
                         stockpiles[@intFromEnum(Resource.coal)] += coal_rate * dt;
+                    }
+                } else if (b.state == .completed and b.btype == .wood_shack) {
+                    if (b.assigned_workers > 0) {
+                        const wood_rate = @as(f32, @floatFromInt(b.assigned_workers)) * WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC;
+                        stockpiles[@intFromEnum(Resource.wood)] += wood_rate * dt;
                     }
                 }
             }
@@ -2364,6 +2571,7 @@ pub fn main() !void {
                         if (b.progress <= 0.0) {
                             // Dismantling complete: return all resources used to build it
                             stockpiles[@intFromEnum(Resource.wood)] += b.btype.woodCost();
+                            stockpiles[@intFromEnum(Resource.steel)] += b.btype.steelCost();
                             removeBuilding(b_idx);
                             if (!hasCompletedLab() and research_menu_open) {
                                 research_menu_open = false;
@@ -2813,6 +3021,78 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                 rl.drawCube(.{ .x = b.pos.x + 0.05, .y = 1.4, .z = b.pos.z - 1.2 }, 0.12, 0.7, 0.9, glow_col);
                 rl.drawCube(.{ .x = b.pos.x + 3.55, .y = 1.5, .z = b.pos.z }, 0.12, 0.7, 1.4, glow_col);
             }
+        } else if (b.btype == .wood_shack) {
+            const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
+            if (b.state == .constructing or b.state == .dismantling) {
+                // Foundation slab (7.84 x 0.36 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, scaf_col);
+
+                // 8 scaffolding timber posts around 4x4 perimeter
+                const post_h = @max(0.6, 3.8 * b.progress);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+
+                // Partial rising cabin walls
+                const wall_h = 2.2 * b.progress;
+                if (wall_h > 0.15) {
+                    rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 0.36 + wall_h / 2.0, .z = b.pos.z - 0.9 }, 4.4, wall_h, 5.2, COLOR_WOOD_SHACK_WALLS);
+                }
+            } else {
+                // Completed Wood Shack (4x4 footprint)
+                // Heavy rustic timber foundation slab
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, COLOR_WOOD_SHACK_FOUNDATION);
+
+                // Main Carpenter / Sawmill Workshop Cabin (left/rear)
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 1.46, .z = b.pos.z - 0.9 }, 4.4, 2.2, 5.2, COLOR_WOOD_SHACK_WALLS);
+                // Sloped timber plank roof
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 2.93, .z = b.pos.z - 0.9 }, 4.8, 0.75, 5.6, COLOR_WOOD_SHACK_ROOF);
+                // Heavy ridge log
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 3.35, .z = b.pos.z - 0.9 }, 1.2, 0.25, 5.6, COLOR_WOOD_SHACK_LOGS);
+
+                // Workshop stovepipe chimney & cowl
+                rl.drawCube(.{ .x = b.pos.x - 3.0, .y = 3.3, .z = b.pos.z - 2.8 }, 0.45, 2.2, 0.45, COLOR_WOOD_SHACK_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x - 3.0, .y = 4.45, .z = b.pos.z - 2.8 }, 0.7, 0.12, 0.7, rl.Color.init(45, 45, 50, 255));
+
+                // Workshop door
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 0.9, .z = b.pos.z + 1.72 }, 1.0, 1.4, 0.12, COLOR_WOOD_SHACK_LOGS);
+
+                // Workshop glowing windows
+                const win_col = if (b.is_warm) rl.Color.init(255, 205, 80, 255) else rl.Color.init(120, 180, 230, 255);
+                rl.drawCube(.{ .x = b.pos.x - 3.62, .y = 1.5, .z = b.pos.z - 0.9 }, 0.12, 0.8, 1.4, win_col);
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 1.5, .z = b.pos.z - 3.52 }, 1.4, 0.8, 0.12, win_col);
+
+                // Timber Sawing Shelter / Covered Work Area (right side)
+                // 4 heavy corner log posts
+                const post_h: f32 = 2.8;
+                rl.drawCube(.{ .x = b.pos.x + 1.2, .y = post_h / 2.0, .z = b.pos.z - 3.0 }, 0.35, post_h, 0.35, COLOR_WOOD_SHACK_LOGS);
+                rl.drawCube(.{ .x = b.pos.x + 3.4, .y = post_h / 2.0, .z = b.pos.z - 3.0 }, 0.35, post_h, 0.35, COLOR_WOOD_SHACK_LOGS);
+                rl.drawCube(.{ .x = b.pos.x + 1.2, .y = post_h / 2.0, .z = b.pos.z + 1.2 }, 0.35, post_h, 0.35, COLOR_WOOD_SHACK_LOGS);
+                rl.drawCube(.{ .x = b.pos.x + 3.4, .y = post_h / 2.0, .z = b.pos.z + 1.2 }, 0.35, post_h, 0.35, COLOR_WOOD_SHACK_LOGS);
+
+                // Sloped shelter canopy awning
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 2.9, .z = b.pos.z - 0.9 }, 2.8, 0.25, 4.8, COLOR_WOOD_SHACK_ROOF);
+
+                // Sawhorse trestle & log being sawed inside shelter
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 0.76, .z = b.pos.z - 0.9 }, 1.4, 0.8, 0.8, COLOR_WOOD_SHACK_PLANKS);
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 1.25, .z = b.pos.z - 0.9 }, 0.6, 0.6, 2.6, COLOR_WOOD_SHACK_LOGS);
+
+                // Stack of freshly cut timber logs (pyramid stack in yard)
+                rl.drawCube(.{ .x = b.pos.x + 1.8, .y = 0.55, .z = b.pos.z + 2.6 }, 2.8, 0.55, 1.4, COLOR_WOOD_SHACK_LOGS);
+                rl.drawCube(.{ .x = b.pos.x + 1.8, .y = 1.05, .z = b.pos.z + 2.6 }, 2.2, 0.50, 1.0, COLOR_WOOD_SHACK_LOGS);
+
+                // Chopping stump block & firewood
+                rl.drawCube(.{ .x = b.pos.x - 2.4, .y = 0.65, .z = b.pos.z + 2.7 }, 0.9, 0.75, 0.9, COLOR_WOOD_SHACK_FOUNDATION);
+                rl.drawCube(.{ .x = b.pos.x - 1.5, .y = 0.45, .z = b.pos.z + 2.8 }, 0.4, 0.4, 0.7, COLOR_WOOD_SHACK_PLANKS);
+
+                // Hanging lantern on sawing shelter post
+                rl.drawCube(.{ .x = b.pos.x + 1.2, .y = 2.3, .z = b.pos.z + 0.9 }, 0.18, 0.26, 0.18, win_col);
+            }
         } else {
             // House
             if (b.state == .constructing or b.state == .dismantling) {
@@ -2888,6 +3168,12 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                     rl.drawCube(.{ .x = pos.x + 1.8, .y = 3.0, .z = pos.z }, 3.6, 0.5, 6.0, col);
                     rl.drawCube(.{ .x = pos.x - 1.6, .y = 2.4, .z = pos.z }, 3.2, 4.6, 3.2, col);
                     rl.drawCube(.{ .x = pos.x + 2.8, .y = 3.8, .z = pos.z - 2.0 }, 0.65, 3.2, 0.65, col);
+                } else if (btype == .wood_shack) {
+                    rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 7.84, 0.36, 7.84, col);
+                    rl.drawCube(.{ .x = pos.x - 1.4, .y = 1.46, .z = pos.z - 0.9 }, 4.4, 2.2, 5.2, col);
+                    rl.drawCube(.{ .x = pos.x - 1.4, .y = 2.93, .z = pos.z - 0.9 }, 4.8, 0.75, 5.6, col);
+                    rl.drawCube(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, col);
+                    rl.drawCube(.{ .x = pos.x - 3.0, .y = 3.3, .z = pos.z - 2.8 }, 0.45, 2.2, 0.45, col);
                 } else {
                     rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, col);
                     rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, col);
@@ -2904,9 +3190,10 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
         const is_lab = (b.btype == .lab);
         const is_gh = (b.btype == .greenhouse);
         const is_cm = (b.btype == .coal_mine);
-        const w_sz: f32 = if (is_cm) 7.84 else if (is_lab) 5.8 else 3.84;
-        const l_sz: f32 = if (is_cm) 7.84 else if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
-        const h_sz: f32 = if (is_cm) 4.6 else if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
+        const is_ws = (b.btype == .wood_shack);
+        const w_sz: f32 = if (is_cm or is_ws) 7.84 else if (is_lab) 5.8 else 3.84;
+        const l_sz: f32 = if (is_cm or is_ws) 7.84 else if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
+        const h_sz: f32 = if (is_cm) 4.6 else if (is_ws) 3.6 else if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
 
         if (b.state == .constructing or b.state == .dismantling) {
             const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
@@ -2925,6 +3212,12 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                 rl.drawCubeWires(.{ .x = b.pos.x + 1.8, .y = 1.6, .z = b.pos.z }, 3.4, 2.4, 5.8, rl.Color.init(55, 58, 68, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x - 1.6, .y = 2.4, .z = b.pos.z - 0.2 }, 3.4, 4.6, 3.4, rl.Color.init(65, 70, 82, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x + 2.8, .y = 3.8, .z = b.pos.z - 2.0 }, 0.65, 3.2, 0.65, rl.Color.init(50, 52, 60, 255));
+            } else if (is_ws) {
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, rl.Color.init(55, 45, 35, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 1.4, .y = 1.46, .z = b.pos.z - 0.9 }, 4.4, 2.2, 5.2, rl.Color.init(65, 45, 25, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 1.4, .y = 2.93, .z = b.pos.z - 0.9 }, 4.8, 0.75, 5.6, rl.Color.init(45, 55, 65, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x + 2.3, .y = 2.9, .z = b.pos.z - 0.9 }, 2.8, 0.25, 4.8, rl.Color.init(55, 60, 65, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 3.0, .y = 3.3, .z = b.pos.z - 2.8 }, 0.45, 2.2, 0.45, rl.Color.init(40, 42, 45, 255));
             } else {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, rl.Color.init(35, 25, 20, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, rl.Color.init(30, 36, 42, 255));
@@ -2976,6 +3269,12 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                     rl.drawCubeWires(.{ .x = pos.x + 1.8, .y = 1.6, .z = pos.z }, 3.4, 2.4, 5.8, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x - 1.6, .y = 2.4, .z = pos.z }, 3.2, 4.6, 3.2, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x + 2.8, .y = 3.8, .z = pos.z - 2.0 }, 0.65, 3.2, 0.65, wire_col);
+                } else if (btype == .wood_shack) {
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 7.84, 0.36, 7.84, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 1.4, .y = 1.46, .z = pos.z - 0.9 }, 4.4, 2.2, 5.2, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 1.4, .y = 2.93, .z = pos.z - 0.9 }, 4.8, 0.75, 5.6, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 3.0, .y = 3.3, .z = pos.z - 2.8 }, 0.45, 2.2, 0.45, wire_col);
                 } else {
                     rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, wire_col);
@@ -3325,7 +3624,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     );
                 }
             }
-        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine)) {
+        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack)) {
             const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
             if (screen_pos.x > -100 and screen_pos.x < sw + 100 and screen_pos.y > -100 and screen_pos.y < sh + 100) {
                 const badge_w: f32 = 175.0;
@@ -3342,15 +3641,18 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
 
                 const is_gh = (b.btype == .greenhouse);
                 const is_lab_b = (b.btype == .lab);
-                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else if (is_lab_b) LAB_CAPACITY else COAL_MINE_CAPACITY;
+                const is_cm = (b.btype == .coal_mine);
+                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else if (is_lab_b) LAB_CAPACITY else if (is_cm) COAL_MINE_CAPACITY else WOOD_SHACK_CAPACITY;
                 const assigned = b.assigned_workers;
 
                 const primary_color = if (is_gh)
                     rl.Color.init(60, 195, 125, 255)
                 else if (is_lab_b)
                     rl.Color.init(100, 215, 255, 255)
+                else if (is_cm)
+                    rl.Color.init(245, 175, 65, 255)
                 else
-                    rl.Color.init(245, 175, 65, 255);
+                    rl.Color.init(195, 130, 80, 255);
 
                 const bg_color = if (is_selected)
                     rl.Color.init(35, 48, 65, 250)
@@ -3371,7 +3673,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 rl.drawRectangle(@intFromFloat(br.x + 8), @intFromFloat(br.y + 7), 12, 14, primary_color);
 
                 // Building Name
-                const name_text = if (is_gh) "Greenhouse" else if (is_lab_b) "Lab" else "Coal Mine";
+                const name_text = if (is_gh) "Greenhouse" else if (is_lab_b) "Lab" else if (is_cm) "Coal Mine" else "Wood Shack";
                 rl.drawText(
                     name_text,
                     @intFromFloat(br.x + 25),
@@ -3454,6 +3756,7 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
             const is_lab = (b.btype == .lab);
             const is_gh = (b.btype == .greenhouse);
             const is_cm = (b.btype == .coal_mine);
+            const is_ws = (b.btype == .wood_shack);
 
             const border_color = if (b.state == .dismantling)
                 COLOR_DISMANTLE_SCAFFOLD
@@ -3463,6 +3766,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 rl.Color.init(65, 150, 195, 255)
             else if (is_cm)
                 rl.Color.init(235, 165, 60, 255)
+            else if (is_ws)
+                rl.Color.init(195, 130, 80, 255)
             else
                 rl.Color.init(184, 138, 72, 255);
 
@@ -3487,6 +3792,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 COLOR_LAB_DOME
             else if (is_cm)
                 COLOR_COAL_MINE_HEADFRAME
+            else if (is_ws)
+                COLOR_WOOD_SHACK_LOGS
             else
                 COLOR_WOOD_PILE;
             rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, icon_color);
@@ -3496,6 +3803,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 fmt("LAB #{d}", .{bid + 1})
             else if (is_cm)
                 fmt("COAL MINE #{d}", .{bid + 1})
+            else if (is_ws)
+                fmt("WOOD SHACK #{d}", .{bid + 1})
             else
                 fmt("HOUSE #{d}", .{bid + 1});
             rl.drawText(
@@ -3509,6 +3818,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                     rl.Color.init(130, 225, 255, 255)
                 else if (is_cm)
                     rl.Color.init(250, 195, 80, 255)
+                else if (is_ws)
+                    rl.Color.init(245, 185, 120, 255)
                 else
                     rl.Color.init(245, 205, 70, 255),
             );
@@ -3527,6 +3838,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 fmt("Research Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else if (is_cm)
                 fmt("Extraction Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
+            else if (is_ws)
+                fmt("Timber Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else
                 fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z });
             rl.drawText(subtitle, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
@@ -3694,7 +4007,54 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                             }
                         }
                     }
-                    rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                    rl.drawText("Demolition refunds resources upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                } else if (is_ws) {
+                    const status_str = if (b.assigned_workers >= WOOD_SHACK_CAPACITY) "STATUS: FULL PRODUCTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL PRODUCTION" else "STATUS: UNSTAFFED (IDLE)";
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 230, 140, 255) else rl.Color.init(245, 195, 65, 255));
+
+                    const staff_str = fmt("Staff: {d} / {d} Lumberjacks", .{ b.assigned_workers, WOOD_SHACK_CAPACITY });
+                    rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
+
+                    const yield_str = fmt("Yield: +{d:.1} Wood/sec (Infinite)", .{@as(f32, @floatFromInt(b.assigned_workers)) * WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC});
+                    rl.drawText(yield_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, rl.Color.init(235, 175, 100, 255));
+
+                    // Worker control buttons: None, -1, +1, Max
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 104, 48, 22), "None")) {
+                            assignWoodShackWorkers(bid, -b.assigned_workers);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 68, panel_y + 104, 38, 22), "-1")) {
+                            assignWoodShackWorkers(bid, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 112, panel_y + 104, 38, 22), "+1")) {
+                            assignWoodShackWorkers(bid, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 156, panel_y + 104, 48, 22), "Max")) {
+                            assignWoodShackWorkers(bid, WOOD_SHACK_CAPACITY);
+                        }
+                    }
+
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
+                            if (b.assigned_workers > 0) {
+                                assignWoodShackWorkers(bid, -b.assigned_workers);
+                            }
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds resources upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
                 } else {
                     rl.drawText("STATUS: INHABITED", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(100, 220, 140, 255));
                     const cap_str = fmt("Shelter: {d} Citizens", .{b.btype.capacity()});
@@ -3728,6 +4088,7 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 if (!is_paused) {
                     if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 118, panel_w - 28, 26), "Cancel")) {
                         stockpiles[@intFromEnum(Resource.wood)] += b.btype.woodCost();
+                        stockpiles[@intFromEnum(Resource.steel)] += b.btype.steelCost();
                         removeBuilding(bid);
                         selected_building = null;
                         if (!hasCompletedLab() and research_menu_open) {
@@ -3735,7 +4096,7 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                         }
                     }
                 }
-                rl.drawText("Canceling refunds all construction wood", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
+                rl.drawText("Canceling refunds all construction resources", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 154), 11, rl.Color.init(140, 155, 175, 255));
             } else if (b.state == .dismantling) {
                 rl.drawText("STATUS: DISMANTLING", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 54), 12, rl.Color.init(245, 95, 75, 255));
                 const pct = @as(i32, @intFromFloat((1.0 - b.progress) * 100.0));
@@ -4103,7 +4464,7 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
                 if (card_hovered) {
                     rl.drawText(
                         if (can_afford) "Click to select and place in the snow" else "Cannot afford (Requires 40 Wood)",
-                        @intFromFloat(card_x + card_w + 16),
+                        @intFromFloat(card_x + card_w + 286.0),
                         @intFromFloat(card_y + 36),
                         13,
                         if (can_afford) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
@@ -4132,6 +4493,86 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
 
                 rl.drawText("Requires 'Coal Mine' research in Resources tab", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(160, 175, 195, 255));
                 rl.drawText("4x4 Grid | Staff: 10 | Produces 8.0 Coal/sec", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(120, 135, 150, 255));
+            }
+
+            // Card 2: Wood Shack
+            const ws_unlocked = (wood_shack_research_state == .completed);
+            const card2_x: f32 = 286.0;
+            const card2_y: f32 = strip_y + 44.0;
+            const card2_w: f32 = 260.0;
+            const card2_h: f32 = 92.0;
+            const card2_rect = rl.Rectangle.init(card2_x, card2_y, card2_w, card2_h);
+            const card2_hovered = rl.checkCollisionPointRec(mouse_pos, card2_rect);
+
+            const can_afford_ws = (stockpiles[@intFromEnum(Resource.wood)] >= WOOD_SHACK_WOOD_COST and stockpiles[@intFromEnum(Resource.steel)] >= WOOD_SHACK_STEEL_COST);
+
+            if (ws_unlocked) {
+                const card_bg = if (card2_hovered)
+                    rl.Color.init(48, 38, 28, 255)
+                else
+                    rl.Color.init(32, 26, 20, 240);
+
+                const card_border = if (card2_hovered)
+                    rl.Color.init(245, 185, 80, 255)
+                else
+                    rl.Color.init(115, 80, 50, 255);
+
+                rl.drawRectangleRounded(card2_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card2_rect, 0.12, 6, if (card2_hovered) 2.0 else 1.2, card_border);
+
+                // Mini Wood Shack Preview Icon
+                rl.drawRectangle(@intFromFloat(card2_x + 10), @intFromFloat(card2_y + 14), 20, 18, COLOR_WOOD_SHACK_WALLS);
+                rl.drawRectangle(@intFromFloat(card2_x + 8), @intFromFloat(card2_y + 10), 24, 6, COLOR_WOOD_SHACK_ROOF);
+                rl.drawRectangle(@intFromFloat(card2_x + 30), @intFromFloat(card2_y + 16), 14, 16, COLOR_WOOD_SHACK_FOUNDATION);
+                rl.drawRectangle(@intFromFloat(card2_x + 32), @intFromFloat(card2_y + 24), 10, 6, COLOR_WOOD_SHACK_LOGS);
+
+                // Building Name
+                rl.drawText("Wood Shack", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 10), 16, rl.Color.white);
+
+                // Cost Badge
+                const cost_pill_rect = rl.Rectangle.init(card2_x + 50, card2_y + 32, 136, 20);
+                rl.drawRectangleRounded(cost_pill_rect, 0.3, 4, if (can_afford_ws) rl.Color.init(28, 55, 38, 255) else rl.Color.init(60, 28, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cost_pill_rect, 0.3, 4, 1.0, if (can_afford_ws) rl.Color.init(80, 185, 115, 255) else rl.Color.init(215, 70, 70, 255));
+                const cost_text = fmt("Cost: {d}W, {d}S", .{ @as(i32, @intFromFloat(WOOD_SHACK_WOOD_COST)), @as(i32, @intFromFloat(WOOD_SHACK_STEEL_COST)) });
+                rl.drawText(cost_text, @intFromFloat(card2_x + 56), @intFromFloat(card2_y + 36), 11, if (can_afford_ws) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
+
+                // Footprint, Capacity & Builder Specs
+                rl.drawText("Footprint: 4x4 Grid Squares", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 56), 10, rl.Color.init(245, 185, 100, 255));
+                rl.drawText("Staff: 10 Workers | Produces 10 Wood/sec", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 70), 10, rl.Color.init(160, 180, 205, 255));
+
+                // Click instruction tip
+                if (card2_hovered) {
+                    rl.drawText(
+                        if (can_afford_ws) "Click to select and place in the snow" else "Cannot afford (Requires 100 Wood, 50 Steel)",
+                        @intFromFloat(card2_x + card2_w + 16),
+                        @intFromFloat(card2_y + 36),
+                        13,
+                        if (can_afford_ws) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
+                    );
+                }
+            } else {
+                // Locked state
+                const card_bg = rl.Color.init(20, 24, 30, 210);
+                const card_border = rl.Color.init(50, 60, 72, 200);
+
+                rl.drawRectangleRounded(card2_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card2_rect, 0.12, 6, 1.0, card_border);
+
+                // Lock icon
+                rl.drawRectangle(@intFromFloat(card2_x + 14), @intFromFloat(card2_y + 16), 24, 22, rl.Color.init(45, 52, 64, 255));
+                rl.drawRectangleLines(@intFromFloat(card2_x + 14), @intFromFloat(card2_y + 16), 24, 22, rl.Color.init(75, 88, 105, 255));
+                rl.drawText("?", @intFromFloat(card2_x + 22), @intFromFloat(card2_y + 18), 16, rl.Color.init(140, 155, 175, 255));
+
+                // Building Name
+                rl.drawText("Wood Shack", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 10), 16, rl.Color.init(140, 150, 165, 255));
+
+                // Locked badge
+                const locked_badge = rl.Rectangle.init(card2_x + 50, card2_y + 32, 108, 18);
+                rl.drawRectangleRounded(locked_badge, 0.3, 4, rl.Color.init(40, 48, 58, 255));
+                rl.drawText("[LOCKED - RESEARCH]", @intFromFloat(card2_x + 54), @intFromFloat(card2_y + 35), 9, rl.Color.init(245, 195, 65, 255));
+
+                rl.drawText("Requires 'Wood Shack' research in Resources tab", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 56), 10, rl.Color.init(160, 175, 195, 255));
+                rl.drawText("4x4 Grid | Staff: 10 | Produces 10 Wood/sec", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 70), 10, rl.Color.init(120, 135, 150, 255));
             }
         }
     }
@@ -4530,6 +4971,115 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(245, 185, 65, 255));
                 rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, rl.Color.init(255, 215, 80, 255));
             }
+
+            // Wood Shack Research Card
+            const ws_card_rect = getWoodShackCardRect(strip_y);
+            const ws_card_x: f32 = ws_card_rect.x;
+            const ws_card_y: f32 = ws_card_rect.y;
+            const ws_cancel_btn_rect = getWoodShackCancelBtnRect(strip_y);
+            const ws_cancel_hovered = (wood_shack_research_state == .researching) and rl.checkCollisionPointRec(mouse_pos, ws_cancel_btn_rect);
+            const ws_card_hovered = rl.checkCollisionPointRec(mouse_pos, ws_card_rect) and !ws_cancel_hovered;
+
+            const current_wood_ws = stockpiles[@intFromEnum(Resource.wood)];
+            const current_steel_ws = stockpiles[@intFromEnum(Resource.steel)];
+            const can_afford_ws_res = current_wood_ws >= WOOD_SHACK_RESEARCH_WOOD_COST and current_steel_ws >= WOOD_SHACK_RESEARCH_STEEL_COST;
+
+            const ws_card_bg = if (ws_card_hovered and wood_shack_research_state == .available)
+                rl.Color.init(46, 36, 26, 255)
+            else
+                rl.Color.init(30, 24, 20, 240);
+
+            const ws_card_border = if (ws_card_hovered and wood_shack_research_state == .available)
+                rl.Color.init(245, 185, 80, 255)
+            else
+                rl.Color.init(100, 70, 45, 255);
+
+            rl.drawRectangleRounded(ws_card_rect, 0.12, 6, ws_card_bg);
+            rl.drawRectangleRoundedLinesEx(ws_card_rect, 0.12, 6, if (ws_card_hovered and wood_shack_research_state == .available) 2.0 else 1.2, ws_card_border);
+
+            // Icon: Wood shack / timber axe symbol
+            rl.drawRectangle(@intFromFloat(ws_card_x + 12), @intFromFloat(ws_card_y + 12), 26, 26, rl.Color.init(45, 32, 22, 255));
+            rl.drawRectangleLines(@intFromFloat(ws_card_x + 12), @intFromFloat(ws_card_y + 12), 26, 26, rl.Color.init(215, 140, 65, 255));
+            rl.drawText("W", @intFromFloat(ws_card_x + 19), @intFromFloat(ws_card_y + 15), 18, rl.Color.init(245, 185, 90, 255));
+
+            rl.drawText("Wood Shack", @intFromFloat(ws_card_x + 48), @intFromFloat(ws_card_y + 10), 15, rl.Color.white);
+            rl.drawText("Timber Production Project", @intFromFloat(ws_card_x + 48), @intFromFloat(ws_card_y + 28), 11, rl.Color.init(225, 180, 130, 255));
+
+            if (wood_shack_research_state == .available) {
+                // Cost badge
+                const cost_text = fmt("Cost: {d} Wood, {d} Steel | Time: 2m 00s", .{
+                    @as(i32, @intFromFloat(WOOD_SHACK_RESEARCH_WOOD_COST)),
+                    @as(i32, @intFromFloat(WOOD_SHACK_RESEARCH_STEEL_COST)),
+                });
+                rl.drawText(cost_text, @intFromFloat(ws_card_x + 48), @intFromFloat(ws_card_y + 46), 11, if (can_afford_ws_res) rl.Color.init(245, 205, 120, 255) else rl.Color.init(255, 110, 110, 255));
+
+                // Button pill
+                const btn_pill_rect = rl.Rectangle.init(ws_card_x + 48, ws_card_y + 64, 210, 20);
+                rl.drawRectangleRounded(btn_pill_rect, 0.3, 4, if (can_afford_ws_res) (if (ws_card_hovered) rl.Color.init(85, 60, 30, 255) else rl.Color.init(65, 45, 25, 255)) else rl.Color.init(55, 25, 25, 255));
+                rl.drawRectangleRoundedLinesEx(btn_pill_rect, 0.3, 4, 1.0, if (can_afford_ws_res) rl.Color.init(215, 160, 60, 255) else rl.Color.init(180, 60, 60, 255));
+                rl.drawText(if (can_afford_ws_res) "Click to Research (25W, 25S)" else "Need 25 Wood, 25 Steel", @intFromFloat(ws_card_x + 54), @intFromFloat(ws_card_y + 68), 10, if (can_afford_ws_res) rl.Color.white else rl.Color.init(255, 130, 130, 255));
+            } else if (wood_shack_research_state == .researching) {
+                const total_researchers = getTotalLabWorkers();
+                const pct = getActiveResearchProgress();
+                const speed_mult = getResearchSpeedMultiplier();
+                if (speed_mult > 0.0) {
+                    const rem_sec_f = (WOOD_SHACK_RESEARCH_DURATION - wood_shack_research_progress) / speed_mult;
+                    const rem = @max(0, @as(i32, @intFromFloat(rem_sec_f)));
+                    const rem_min = @divTrunc(rem, 60);
+                    const rem_sec = @rem(rem, 60);
+
+                    const speed_pct = @as(i32, @intFromFloat(speed_mult * 100.0));
+                    const staff_info = if (total_researchers > getMaxEffectiveResearchWorkers())
+                        fmt("{d} Staff (Cap 4 Labs), {d}%", .{ total_researchers, speed_pct })
+                    else
+                        fmt("{d} Staff, {d}%", .{ total_researchers, speed_pct });
+
+                    _ = rl.drawText(
+                        fmt("Researching: {d}% | ~{d}m {d:0>2}s left ({s})", .{
+                            @as(i32, @intFromFloat(pct * 100.0)),
+                            rem_min,
+                            rem_sec,
+                            staff_info,
+                        }),
+                        @intFromFloat(ws_card_x + 48),
+                        @intFromFloat(ws_card_y + 46),
+                        11,
+                        rl.Color.init(245, 205, 100, 255),
+                    );
+                } else {
+                    _ = rl.drawText(
+                        fmt("PAUSED: 0 Staff in Labs (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
+                        @intFromFloat(ws_card_x + 48),
+                        @intFromFloat(ws_card_y + 46),
+                        11,
+                        rl.Color.init(255, 120, 100, 255),
+                    );
+                }
+
+                // Progress Bar
+                const bar_x: f32 = ws_card_x + 48.0;
+                const bar_y: f32 = ws_card_y + 66.0;
+                const bar_w: f32 = ws_cancel_btn_rect.x - 10.0 - bar_x;
+                const bar_h: f32 = 14.0;
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
+                rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, if (total_researchers > 0) rl.Color.init(245, 185, 65, 255) else rl.Color.init(180, 80, 70, 255));
+
+                // Cancel Button
+                rl.drawRectangleRounded(ws_cancel_btn_rect, 0.3, 4, if (ws_cancel_hovered) rl.Color.init(170, 40, 45, 255) else rl.Color.init(55, 25, 28, 255));
+                rl.drawRectangleRoundedLinesEx(ws_cancel_btn_rect, 0.3, 4, 1.0, if (ws_cancel_hovered) rl.Color.init(255, 110, 110, 255) else rl.Color.init(180, 60, 65, 255));
+                const cancel_tw = rl.measureText("Cancel", 11);
+                const cancel_tx = @as(i32, @intFromFloat(ws_cancel_btn_rect.x + (ws_cancel_btn_rect.width - @as(f32, @floatFromInt(cancel_tw))) / 2.0));
+                const cancel_ty = @as(i32, @intFromFloat(ws_cancel_btn_rect.y + 4.5));
+                rl.drawText("Cancel", cancel_tx, cancel_ty, 11, if (ws_cancel_hovered) rl.Color.white else rl.Color.init(255, 180, 180, 255));
+            } else if (wood_shack_research_state == .completed) {
+                rl.drawText("Unlocks 4x4 Wood Shack timber building", @intFromFloat(ws_card_x + 48), @intFromFloat(ws_card_y + 46), 11, rl.Color.init(220, 205, 150, 255));
+
+                const comp_rect = rl.Rectangle.init(ws_card_x + 48, ws_card_y + 64, 160, 20);
+                rl.drawRectangleRounded(comp_rect, 0.3, 4, rl.Color.init(55, 45, 25, 255));
+                rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(245, 185, 65, 255));
+                rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(ws_card_x + 54), @intFromFloat(ws_card_y + 68), 10, rl.Color.init(255, 215, 80, 255));
+            }
         }
     }
 }
@@ -4574,12 +5124,21 @@ fn drawPlacementTooltip(mouse_pos: rl.Vector2, btype: BuildingType, check: Place
     const tip_y: i32 = @as(i32, @intFromFloat(mouse_pos.y)) + 16;
 
     const text = if (check.valid)
-        fmt("[LMB] Place {s} ({d}x{d}, {d} Wood) | [Shift+LMB] Multiple | [RMB/Esc] Cancel", .{
-            btype.name(),
-            btype.gridWidth(),
-            btype.gridLength(),
-            @as(i32, @intFromFloat(btype.woodCost())),
-        })
+        (if (btype.steelCost() > 0.0)
+            fmt("[LMB] Place {s} ({d}x{d}, {d} Wood, {d} Steel) | [Shift+LMB] Multiple | [RMB/Esc] Cancel", .{
+                btype.name(),
+                btype.gridWidth(),
+                btype.gridLength(),
+                @as(i32, @intFromFloat(btype.woodCost())),
+                @as(i32, @intFromFloat(btype.steelCost())),
+            })
+        else
+            fmt("[LMB] Place {s} ({d}x{d}, {d} Wood) | [Shift+LMB] Multiple | [RMB/Esc] Cancel", .{
+                btype.name(),
+                btype.gridWidth(),
+                btype.gridLength(),
+                @as(i32, @intFromFloat(btype.woodCost())),
+            }))
     else
         fmt("Cannot Place: {s} | [RMB/Esc] Cancel", .{check.reason});
 
@@ -4632,8 +5191,14 @@ fn drawPopulationPopover(x: f32, y: f32) void {
             coal_mine_workers += b.assigned_workers;
         }
     }
+    var wood_shack_workers: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .completed and b.btype == .wood_shack) {
+            wood_shack_workers += b.assigned_workers;
+        }
+    }
     const lab_workers = getTotalLabWorkers();
-    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + coal_mine_workers + lab_workers;
+    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + coal_mine_workers + wood_shack_workers + lab_workers;
     const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
 
     const pop_w: f32 = 264.0;
@@ -4698,7 +5263,7 @@ fn drawPopulationPopover(x: f32, y: f32) void {
         rl.Color.init(140, 165, 190, 255),
     );
     rl.drawText(
-        fmt("  Researchers: {d}", .{lab_workers}),
+        fmt("  Researchers: {d} | Lumberjacks: {d}", .{ lab_workers, wood_shack_workers }),
         @intFromFloat(x + 20.0),
         @intFromFloat(y + 83.0),
         11,
@@ -4774,7 +5339,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
 
-        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses)
+        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses, Wood accounts for wood shacks)
         var cm_coal_rate: f32 = 0.0;
         if (r == .coal) {
             for (buildings[0..buildings_count]) |b| {
@@ -4791,11 +5356,21 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
                 }
             }
         }
+        var ws_wood_rate: f32 = 0.0;
+        if (r == .wood) {
+            for (buildings[0..buildings_count]) |b| {
+                if (b.state == .completed and b.btype == .wood_shack) {
+                    ws_wood_rate += @as(f32, @floatFromInt(b.assigned_workers)) * WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC;
+                }
+            }
+        }
         const pile_gather = if (isPileActive(r)) (@as(f32, @floatFromInt(workers)) * r.gatherRate()) else 0.0;
         const net_rate: f32 = if (r == .coal)
             pile_gather + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
         else if (r == .food)
             pile_gather + gh_food_rate
+        else if (r == .wood)
+            pile_gather + ws_wood_rate
         else
             pile_gather;
 
