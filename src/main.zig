@@ -95,6 +95,11 @@ pub var GREENHOUSE_GRID_WIDTH: i32 = 2;
 /// Length in grid squares for a Greenhouse (4 squares = 8.0 world units)
 pub var GREENHOUSE_GRID_LENGTH: i32 = 4;
 
+/// Width in grid squares for a Coal Mine (4 squares = 8.0 world units)
+pub var COAL_MINE_GRID_WIDTH: i32 = 4;
+/// Length in grid squares for a Coal Mine (4 squares = 8.0 world units)
+pub var COAL_MINE_GRID_LENGTH: i32 = 4;
+
 /// Width in grid squares for the Heat Generator (4 squares = 8.0 world units)
 pub var GENERATOR_GRID_WIDTH: i32 = 4;
 /// Length in grid squares for the Heat Generator (4 squares = 8.0 world units)
@@ -163,6 +168,29 @@ pub var GREENHOUSES_RESEARCH_WOOD_COST: f32 = 20.0;
 /// Research duration in seconds for Greenhouses (2 minutes = 120 seconds)
 pub var GREENHOUSES_RESEARCH_DURATION: f32 = 120.0;
 
+/// Wood cost required to construct one Coal Mine
+pub var COAL_MINE_WOOD_COST: f32 = 40.0;
+/// Worker capacity for a completed Coal Mine
+pub var COAL_MINE_CAPACITY: i32 = 10;
+/// Base construction duration in seconds when built by maximum workers
+pub var COAL_MINE_BASE_BUILD_TIME: f32 = 25.0;
+/// Maximum number of idle workers that can simultaneously construct a single Coal Mine
+pub var COAL_MINE_MAX_BUILDERS: i32 = 10;
+/// Clearance collision radius around a Coal Mine in world units
+pub var COAL_MINE_COLLISION_RADIUS: f32 = 5.8;
+
+/// Wood cost required to research Coal Mine in the Lab
+pub var COAL_MINE_RESEARCH_WOOD_COST: f32 = 100.0;
+/// Steel cost required to research Coal Mine in the Lab
+pub var COAL_MINE_RESEARCH_STEEL_COST: f32 = 100.0;
+/// Research duration in seconds for Coal Mine (2 minutes = 120 seconds)
+pub var COAL_MINE_RESEARCH_DURATION: f32 = 120.0;
+
+/// Coal generation multiplier relative to a standard coal pile worker
+pub var COAL_MINE_GATHER_RATE_MULTIPLIER: f32 = 2.0;
+/// Coal generated per worker per second in a Coal Mine (double the coal of a coal pile: 0.40 * 2.0 = 0.80 coal/sec)
+pub var COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC: f32 = 0.80;
+
 /// Maximum number of placed buildings in the settlement
 pub const MAX_BUILDINGS: usize = 128;
 
@@ -190,6 +218,13 @@ pub var COLOR_GREENHOUSE_WALLS: rl.Color = rl.Color.init(45, 95, 80, 255); // Da
 pub var COLOR_GREENHOUSE_GLASS: rl.Color = rl.Color.init(65, 185, 145, 190); // Translucent seafoam glass panels
 pub var COLOR_GREENHOUSE_ROOF: rl.Color = rl.Color.init(80, 205, 160, 220); // Pitched glass roof canopy
 pub var COLOR_GREENHOUSE_CROPS: rl.Color = rl.Color.init(75, 185, 90, 255); // Vibrant agricultural crops
+pub var COLOR_COAL_MINE_WALLS: rl.Color = rl.Color.init(48, 44, 42, 255); // Dark weathered timber & corrugated iron
+pub var COLOR_COAL_MINE_ROOF: rl.Color = rl.Color.init(36, 40, 48, 255); // Heavy industrial slate/iron roof
+pub var COLOR_COAL_MINE_FOUNDATION: rl.Color = rl.Color.init(32, 35, 40, 255); // Heavy reinforced stone base
+pub var COLOR_COAL_MINE_HEADFRAME: rl.Color = rl.Color.init(72, 58, 48, 255); // Heavy structural timber tower
+pub var COLOR_COAL_MINE_CHIMNEY: rl.Color = rl.Color.init(60, 38, 32, 255); // Industrial soot-stained smokestack
+pub var COLOR_COAL_MINE_CHUTE: rl.Color = rl.Color.init(55, 60, 70, 255); // Heavy iron ore chute
+pub var COLOR_COAL_MINE_WHEEL: rl.Color = rl.Color.init(115, 125, 140, 255); // Pithead winding gear wheel
 pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
 pub var COLOR_DISMANTLE_SCAFFOLD: rl.Color = rl.Color.init(205, 80, 60, 255); // Demolition/dismantling scaffolding frame
 pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
@@ -278,10 +313,11 @@ pub const CitizenRole = enum {
     gathering_food,
     working_greenhouse,
     working_lab,
+    working_coal_mine,
 
     pub fn toResource(self: CitizenRole) ?Resource {
         return switch (self) {
-            .idle, .working_greenhouse, .working_lab => null,
+            .idle, .working_greenhouse, .working_lab, .working_coal_mine => null,
             .gathering_coal => .coal,
             .gathering_wood => .wood,
             .gathering_steel => .steel,
@@ -303,12 +339,14 @@ pub const BuildingType = enum(usize) {
     house = 0,
     lab = 1,
     greenhouse = 2,
+    coal_mine = 3,
 
     pub fn name(self: BuildingType) [:0]const u8 {
         return switch (self) {
             .house => "House",
             .lab => "Lab",
             .greenhouse => "Greenhouse",
+            .coal_mine => "Coal Mine",
         };
     }
 
@@ -317,6 +355,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_WOOD_COST,
             .lab => LAB_WOOD_COST,
             .greenhouse => GREENHOUSE_WOOD_COST,
+            .coal_mine => COAL_MINE_WOOD_COST,
         };
     }
 
@@ -325,6 +364,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_CAPACITY,
             .lab => LAB_CAPACITY,
             .greenhouse => GREENHOUSE_CAPACITY,
+            .coal_mine => COAL_MINE_CAPACITY,
         };
     }
 
@@ -333,6 +373,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_MAX_BUILDERS,
             .lab => LAB_MAX_BUILDERS,
             .greenhouse => GREENHOUSE_MAX_BUILDERS,
+            .coal_mine => COAL_MINE_MAX_BUILDERS,
         };
     }
 
@@ -341,6 +382,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_BASE_BUILD_TIME,
             .lab => LAB_BASE_BUILD_TIME,
             .greenhouse => GREENHOUSE_BASE_BUILD_TIME,
+            .coal_mine => COAL_MINE_BASE_BUILD_TIME,
         };
     }
 
@@ -349,6 +391,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_GRID_WIDTH,
             .lab => LAB_GRID_WIDTH,
             .greenhouse => GREENHOUSE_GRID_WIDTH,
+            .coal_mine => COAL_MINE_GRID_WIDTH,
         };
     }
 
@@ -357,6 +400,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_GRID_LENGTH,
             .lab => LAB_GRID_LENGTH,
             .greenhouse => GREENHOUSE_GRID_LENGTH,
+            .coal_mine => COAL_MINE_GRID_LENGTH,
         };
     }
 
@@ -365,6 +409,7 @@ pub const BuildingType = enum(usize) {
             .house => HOUSE_COLLISION_RADIUS,
             .lab => LAB_COLLISION_RADIUS,
             .greenhouse => GREENHOUSE_COLLISION_RADIUS,
+            .coal_mine => COAL_MINE_COLLISION_RADIUS,
         };
     }
 };
@@ -397,11 +442,13 @@ pub const BuildTab = enum {
     people,
     food,
     science,
+    resources,
 };
 
 pub const ResearchTab = enum {
     technology,
     food,
+    resources,
     efficiency,
     exploration,
 };
@@ -753,6 +800,8 @@ var research_menu_open: bool = false;
 var active_research_tab: ResearchTab = .food;
 var greenhouses_research_state: ResearchState = .available;
 var greenhouses_research_progress: f32 = 0.0;
+var coal_mine_research_state: ResearchState = .available;
+var coal_mine_research_progress: f32 = 0.0;
 var research_spinner_angle: f32 = 0.0;
 
 // ============================================================================
@@ -774,12 +823,14 @@ fn hasCompletedLab() bool {
 }
 
 fn isResearchActive() bool {
-    return (greenhouses_research_state == .researching);
+    return (greenhouses_research_state == .researching or coal_mine_research_state == .researching);
 }
 
 fn getActiveResearchProgress() f32 {
     if (greenhouses_research_state == .researching) {
         return std.math.clamp(greenhouses_research_progress / GREENHOUSES_RESEARCH_DURATION, 0.0, 1.0);
+    } else if (coal_mine_research_state == .researching) {
+        return std.math.clamp(coal_mine_research_progress / COAL_MINE_RESEARCH_DURATION, 0.0, 1.0);
     }
     return 0.0;
 }
@@ -844,11 +895,27 @@ fn getGreenhousesCancelBtnRect(strip_y: f32) rl.Rectangle {
     return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
 }
 
+fn getCoalMineCardRect(strip_y: f32) rl.Rectangle {
+    return rl.Rectangle.init(16.0, strip_y + 44.0, 310.0, 92.0);
+}
+
+fn getCoalMineCancelBtnRect(strip_y: f32) rl.Rectangle {
+    const card = getCoalMineCardRect(strip_y);
+    const btn_w: f32 = 64.0;
+    const btn_h: f32 = 20.0;
+    return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
+}
+
 fn cancelOngoingResearch() void {
     if (greenhouses_research_state == .researching) {
         stockpiles[@intFromEnum(Resource.wood)] += GREENHOUSES_RESEARCH_WOOD_COST;
         greenhouses_research_state = .available;
         greenhouses_research_progress = 0.0;
+    } else if (coal_mine_research_state == .researching) {
+        stockpiles[@intFromEnum(Resource.wood)] += COAL_MINE_RESEARCH_WOOD_COST;
+        stockpiles[@intFromEnum(Resource.steel)] += COAL_MINE_RESEARCH_STEEL_COST;
+        coal_mine_research_state = .available;
+        coal_mine_research_progress = 0.0;
     }
 }
 
@@ -961,6 +1028,60 @@ fn assignLabWorkers(idx: usize, delta: i32) void {
     }
 }
 
+fn assignCoalMineWorkers(idx: usize, delta: i32) void {
+    if (idx >= buildings_count) return;
+    var b = &buildings[idx];
+    if (b.btype != .coal_mine or b.state != .completed) return;
+
+    if (delta > 0) {
+        const can_add = @min(delta, @as(i32, @intCast(citizen_mgr.getIdleCount())));
+        const space = COAL_MINE_CAPACITY - b.assigned_workers;
+        const to_add = @min(can_add, space);
+        var added: i32 = 0;
+        while (added < to_add) : (added += 1) {
+            if (citizen_mgr.idle_count == 0) break;
+            citizen_mgr.idle_count -= 1;
+            const id = citizen_mgr.idle_ids[citizen_mgr.idle_count];
+            citizen_mgr.role[id] = .working_coal_mine;
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(2.0, 4.5);
+            citizen_mgr.target_x[id] = b.pos.x + @cos(angle) * dist;
+            citizen_mgr.target_z[id] = b.pos.z + @sin(angle) * dist;
+            citizen_mgr.wander_timer[id] = randomFloat(2.0, 5.0);
+            b.assigned_workers += 1;
+        }
+    } else if (delta < 0) {
+        const to_remove = @min(-delta, b.assigned_workers);
+        var removed: i32 = 0;
+        while (removed < to_remove) : (removed += 1) {
+            var closest_id: ?usize = null;
+            var min_dist_sq: f32 = std.math.floatMax(f32);
+            for (0..citizen_mgr.count) |i| {
+                if (citizen_mgr.role[i] == .working_coal_mine) {
+                    const dx = citizen_mgr.pos_x[i] - b.pos.x;
+                    const dz = citizen_mgr.pos_z[i] - b.pos.z;
+                    const d_sq = dx * dx + dz * dz;
+                    if (d_sq < min_dist_sq) {
+                        min_dist_sq = d_sq;
+                        closest_id = i;
+                    }
+                }
+            }
+            if (closest_id) |cid| {
+                citizen_mgr.role[cid] = .idle;
+                citizen_mgr.idle_ids[citizen_mgr.idle_count] = @intCast(cid);
+                citizen_mgr.idle_count += 1;
+                const tgt = pickTargetForRole(.idle);
+                citizen_mgr.target_x[cid] = tgt.x;
+                citizen_mgr.target_z[cid] = tgt.z;
+                b.assigned_workers -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn removeBuilding(idx: usize) void {
     if (idx >= buildings_count) return;
     if (buildings[idx].btype == .greenhouse and buildings[idx].assigned_workers > 0) {
@@ -968,6 +1089,9 @@ fn removeBuilding(idx: usize) void {
     }
     if (buildings[idx].btype == .lab and buildings[idx].assigned_workers > 0) {
         assignLabWorkers(idx, -buildings[idx].assigned_workers);
+    }
+    if (buildings[idx].btype == .coal_mine and buildings[idx].assigned_workers > 0) {
+        assignCoalMineWorkers(idx, -buildings[idx].assigned_workers);
     }
     var i = idx;
     while (i + 1 < buildings_count) : (i += 1) {
@@ -1178,6 +1302,25 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
             .y = 0.0,
             .z = @sin(angle) * dist,
         };
+    } else if (role == .working_coal_mine) {
+        for (buildings[0..buildings_count]) |b| {
+            if (b.btype == .coal_mine and b.state == .completed and b.assigned_workers > 0) {
+                const angle = randomFloat(0.0, std.math.pi * 2.0);
+                const dist = randomFloat(2.0, 4.5);
+                return .{
+                    .x = b.pos.x + @cos(angle) * dist,
+                    .y = 0.0,
+                    .z = b.pos.z + @sin(angle) * dist,
+                };
+            }
+        }
+        const angle = randomFloat(0.0, std.math.pi * 2.0);
+        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+        return .{
+            .x = @cos(angle) * dist,
+            .y = 0.0,
+            .z = @sin(angle) * dist,
+        };
     } else if (role.toResource()) |res| {
         const center = res.position();
         const angle = randomFloat(0.0, std.math.pi * 2.0);
@@ -1235,6 +1378,8 @@ fn initGame() void {
     active_research_tab = .food;
     greenhouses_research_state = .available;
     greenhouses_research_progress = 0.0;
+    coal_mine_research_state = .available;
+    coal_mine_research_progress = 0.0;
     research_spinner_angle = 0.0;
     placing_building = null;
     selected_building = null;
@@ -1304,7 +1449,7 @@ fn getBuildingDialogRect(b: Building, camera: rl.Camera3D, sw: f32, sh: f32) ?rl
         return null;
     }
 
-    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab);
+    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine);
     const card_w: f32 = 250.0;
     const card_h: f32 = if (is_worker_facility and b.state == .completed) 226.0 else 188.0;
 
@@ -1685,6 +1830,16 @@ pub fn main() !void {
                         } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
                             assignLabWorkers(s_bid, LAB_CAPACITY);
                         }
+                    } else if (buildings[s_bid].btype == .coal_mine) {
+                        if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                            assignCoalMineWorkers(s_bid, 1);
+                        } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                            assignCoalMineWorkers(s_bid, -1);
+                        } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                            assignCoalMineWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                        } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                            assignCoalMineWorkers(s_bid, COAL_MINE_CAPACITY);
+                        }
                     }
                 }
             }
@@ -1788,8 +1943,8 @@ pub fn main() !void {
                     if (hit.hit) {
                         hovered_building = b.id;
                     }
-                    // Also check collision against floating badge for completed Greenhouse & Lab (when not selected)
-                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab)) {
+                    // Also check collision against floating badge for completed Greenhouse, Lab & Coal Mine (when not selected)
+                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine)) {
                         const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
                         const badge_rect = rl.Rectangle.init(screen_pos.x - 175.0 / 2.0, screen_pos.y - 28.0 / 2.0, 175.0, 28.0);
                         if (rl.checkCollisionPointRec(mouse_pos, badge_rect)) {
@@ -1805,7 +1960,10 @@ pub fn main() !void {
                 }
             }
 
-            const in_res_cancel = research_menu_open and active_research_tab == .food and greenhouses_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getGreenhousesCancelBtnRect(strip_y));
+            const in_res_cancel = research_menu_open and (
+                (active_research_tab == .food and greenhouses_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getGreenhousesCancelBtnRect(strip_y))) or
+                (active_research_tab == .resources and coal_mine_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getCoalMineCancelBtnRect(strip_y)))
+            );
 
             // Set cursor style
             if (placing_building != null) {
@@ -1884,12 +2042,15 @@ pub fn main() !void {
                         const tab_people_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
                         const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
                         const tab_science_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
+                        const tab_res_rect = rl.Rectangle.init(370.0, tab_y, tab_w + 10, tab_h);
                         if (rl.checkCollisionPointRec(mouse_pos, tab_people_rect)) {
                             active_build_tab = .people;
                         } else if (rl.checkCollisionPointRec(mouse_pos, tab_food_rect)) {
                             active_build_tab = .food;
                         } else if (rl.checkCollisionPointRec(mouse_pos, tab_science_rect)) {
                             active_build_tab = .science;
+                        } else if (rl.checkCollisionPointRec(mouse_pos, tab_res_rect)) {
+                            active_build_tab = .resources;
                         }
 
                         // Check cards based on active tab
@@ -1919,6 +2080,16 @@ pub fn main() !void {
                                     build_menu_open = false;
                                 }
                             }
+                        } else if (active_build_tab == .resources) {
+                            if (coal_mine_research_state == .completed) {
+                                const cm_card_rect = rl.Rectangle.init(16.0, strip_y + 44.0, 250.0, 92.0);
+                                if (rl.checkCollisionPointRec(mouse_pos, cm_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.coal_mine.woodCost()) {
+                                        placing_building = .coal_mine;
+                                        build_menu_open = false;
+                                    }
+                                }
+                            }
                         }
                     } else if (in_research_strip) {
                         // Check close button [x]
@@ -1931,10 +2102,13 @@ pub fn main() !void {
                         const tab_h: f32 = 28.0;
                         const tab_tech_rect = rl.Rectangle.init(16.0, tab_y, tab_w, tab_h);
                         const tab_food_rect = rl.Rectangle.init(134.0, tab_y, tab_w, tab_h);
+                        const tab_res_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
                         if (rl.checkCollisionPointRec(mouse_pos, tab_tech_rect)) {
                             active_research_tab = .technology;
                         } else if (rl.checkCollisionPointRec(mouse_pos, tab_food_rect)) {
                             active_research_tab = .food;
+                        } else if (rl.checkCollisionPointRec(mouse_pos, tab_res_rect)) {
+                            active_research_tab = .resources;
                         }
 
                         if (active_research_tab == .food) {
@@ -1949,6 +2123,25 @@ pub fn main() !void {
                                 }
                             } else if (greenhouses_research_state == .researching) {
                                 const cancel_btn_rect = getGreenhousesCancelBtnRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
+                                    cancelOngoingResearch();
+                                }
+                            }
+                        } else if (active_research_tab == .resources) {
+                            if (coal_mine_research_state == .available and !isResearchActive()) {
+                                const cm_card_rect = getCoalMineCardRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, cm_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= COAL_MINE_RESEARCH_WOOD_COST and
+                                        stockpiles[@intFromEnum(Resource.steel)] >= COAL_MINE_RESEARCH_STEEL_COST and
+                                        hasCompletedLab()) {
+                                        stockpiles[@intFromEnum(Resource.wood)] -= COAL_MINE_RESEARCH_WOOD_COST;
+                                        stockpiles[@intFromEnum(Resource.steel)] -= COAL_MINE_RESEARCH_STEEL_COST;
+                                        coal_mine_research_state = .researching;
+                                        coal_mine_research_progress = 0.0;
+                                    }
+                                }
+                            } else if (coal_mine_research_state == .researching) {
+                                const cancel_btn_rect = getCoalMineCancelBtnRect(strip_y);
                                 if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
                                     cancelOngoingResearch();
                                 }
@@ -2003,7 +2196,15 @@ pub fn main() !void {
                         greenhouses_research_state = .completed;
                     }
                 }
-
+            } else if (coal_mine_research_state == .researching) {
+                const speed = getResearchSpeedMultiplier();
+                if (speed > 0.0) {
+                    coal_mine_research_progress += speed * dt;
+                    if (coal_mine_research_progress >= COAL_MINE_RESEARCH_DURATION) {
+                        coal_mine_research_progress = COAL_MINE_RESEARCH_DURATION;
+                        coal_mine_research_state = .completed;
+                    }
+                }
             }
 
             // 1. Generator coal fuel consumption
@@ -2038,6 +2239,11 @@ pub fn main() !void {
                     if (b.assigned_workers > 0) {
                         const food_rate = @as(f32, @floatFromInt(b.assigned_workers)) * 1.0;
                         stockpiles[@intFromEnum(Resource.food)] += food_rate * dt;
+                    }
+                } else if (b.state == .completed and b.btype == .coal_mine) {
+                    if (b.assigned_workers > 0) {
+                        const coal_rate = @as(f32, @floatFromInt(b.assigned_workers)) * COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC;
+                        stockpiles[@intFromEnum(Resource.coal)] += coal_rate * dt;
                     }
                 }
             }
@@ -2463,6 +2669,77 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                 rl.drawCube(.{ .x = b.pos.x, .y = 0.88, .z = b.pos.z + 3.82 }, 0.95, 1.35, 0.12, rl.Color.init(32, 55, 45, 255));
                 rl.drawCube(.{ .x = b.pos.x, .y = 0.88, .z = b.pos.z - 3.82 }, 0.95, 1.35, 0.12, rl.Color.init(32, 55, 45, 255));
             }
+        } else if (b.btype == .coal_mine) {
+            const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
+            if (b.state == .constructing or b.state == .dismantling) {
+                // Foundation slab (7.84 x 0.40 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.20, .z = b.pos.z }, 7.84, 0.40, 7.84, scaf_col);
+
+                // 8 scaffolding timber posts around 4x4 perimeter
+                const post_h = @max(0.6, 4.5 * b.progress);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_WOOD_PILE);
+
+                // Partial rising engine house walls
+                const wall_h = 2.4 * b.progress;
+                if (wall_h > 0.15) {
+                    rl.drawCube(.{ .x = b.pos.x + 1.8, .y = 0.40 + wall_h / 2.0, .z = b.pos.z }, 3.4, wall_h, 5.8, COLOR_COAL_MINE_WALLS);
+                }
+            } else {
+                // Completed Coal Mine (4x4 footprint)
+                // Heavy reinforced stone foundation (7.84 x 0.40 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.20, .z = b.pos.z }, 7.84, 0.40, 7.84, COLOR_COAL_MINE_FOUNDATION);
+
+                // Mine Shaft Entrance Pit on left side
+                rl.drawCube(.{ .x = b.pos.x - 1.6, .y = 0.41, .z = b.pos.z - 0.2 }, 3.4, 0.05, 3.4, rl.Color.init(15, 15, 18, 255));
+                rl.drawCube(.{ .x = b.pos.x - 1.6, .y = 0.43, .z = b.pos.z - 0.2 }, 3.1, 0.04, 3.1, rl.Color.init(8, 8, 10, 255));
+
+                // Headframe / Pithead Winding Tower (4 heavy timber/steel columns over the shaft)
+                const tower_h: f32 = 4.6;
+                rl.drawCube(.{ .x = b.pos.x - 3.1, .y = tower_h / 2.0, .z = b.pos.z - 1.7 }, 0.42, tower_h, 0.42, COLOR_COAL_MINE_HEADFRAME);
+                rl.drawCube(.{ .x = b.pos.x - 0.1, .y = tower_h / 2.0, .z = b.pos.z - 1.7 }, 0.42, tower_h, 0.42, COLOR_COAL_MINE_HEADFRAME);
+                rl.drawCube(.{ .x = b.pos.x - 3.1, .y = tower_h / 2.0, .z = b.pos.z + 1.3 }, 0.42, tower_h, 0.42, COLOR_COAL_MINE_HEADFRAME);
+                rl.drawCube(.{ .x = b.pos.x - 0.1, .y = tower_h / 2.0, .z = b.pos.z + 1.3 }, 0.42, tower_h, 0.42, COLOR_COAL_MINE_HEADFRAME);
+
+                // Diagonal bracing struts
+                rl.drawCube(.{ .x = b.pos.x - 1.6, .y = 2.4, .z = b.pos.z - 1.7 }, 3.0, 0.28, 0.28, COLOR_COAL_MINE_HEADFRAME);
+                rl.drawCube(.{ .x = b.pos.x - 1.6, .y = 2.4, .z = b.pos.z + 1.3 }, 3.0, 0.28, 0.28, COLOR_COAL_MINE_HEADFRAME);
+                rl.drawCube(.{ .x = b.pos.x - 3.1, .y = 2.4, .z = b.pos.z - 0.2 }, 0.28, 0.28, 3.0, COLOR_COAL_MINE_HEADFRAME);
+
+                // Top headframe platform & crossbeam
+                rl.drawCube(.{ .x = b.pos.x - 1.6, .y = tower_h + 0.15, .z = b.pos.z - 0.2 }, 3.4, 0.3, 3.4, COLOR_COAL_MINE_HEADFRAME);
+
+                // Twin Winding Sheave Wheels atop the headframe
+                rl.drawCube(.{ .x = b.pos.x - 1.9, .y = tower_h + 0.7, .z = b.pos.z - 0.2 }, 0.25, 0.9, 0.9, COLOR_COAL_MINE_WHEEL);
+                rl.drawCube(.{ .x = b.pos.x - 1.3, .y = tower_h + 0.7, .z = b.pos.z - 0.2 }, 0.25, 0.9, 0.9, COLOR_COAL_MINE_WHEEL);
+
+                // Winding Engine & Sorting House / Workshop on right side
+                rl.drawCube(.{ .x = b.pos.x + 1.8, .y = 1.6, .z = b.pos.z }, 3.4, 2.4, 5.8, COLOR_COAL_MINE_WALLS);
+                // Sloped industrial corrugated roof
+                rl.drawCube(.{ .x = b.pos.x + 1.8, .y = 3.0, .z = b.pos.z }, 3.6, 0.5, 6.0, COLOR_COAL_MINE_ROOF);
+
+                // Industrial brick smokestack
+                rl.drawCube(.{ .x = b.pos.x + 2.8, .y = 3.8, .z = b.pos.z - 2.0 }, 0.65, 3.2, 0.65, COLOR_COAL_MINE_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x + 2.8, .y = 5.45, .z = b.pos.z - 2.0 }, 0.85, 0.2, 0.85, rl.Color.init(42, 28, 24, 255));
+
+                // Coal discharge chute from shaft to sorting house
+                rl.drawCube(.{ .x = b.pos.x + 0.3, .y = 1.3, .z = b.pos.z + 1.8 }, 1.2, 0.9, 2.2, COLOR_COAL_MINE_CHUTE);
+
+                // Freshly mined coal mounds & ore carts at loading platform
+                rl.drawCube(.{ .x = b.pos.x - 1.8, .y = 0.65, .z = b.pos.z + 2.4 }, 2.2, 0.5, 1.8, COLOR_COAL_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 1.8, .y = 1.0, .z = b.pos.z + 2.4 }, 1.4, 0.35, 1.2, rl.Color.init(38, 38, 44, 255));
+
+                // Glowing lanterns / engine house windows
+                const glow_col = if (b.is_warm) rl.Color.init(255, 185, 75, 255) else rl.Color.init(180, 120, 50, 255);
+                rl.drawCube(.{ .x = b.pos.x + 0.05, .y = 1.4, .z = b.pos.z - 1.2 }, 0.12, 0.7, 0.9, glow_col);
+                rl.drawCube(.{ .x = b.pos.x + 3.55, .y = 1.5, .z = b.pos.z }, 0.12, 0.7, 1.4, glow_col);
+            }
         } else {
             // House
             if (b.state == .constructing or b.state == .dismantling) {
@@ -2532,6 +2809,12 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                     rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.84, 0.36, 7.84, col);
                     rl.drawCube(.{ .x = pos.x, .y = 1.56, .z = pos.z }, 3.5, 1.4, 7.5, col);
                     rl.drawCube(.{ .x = pos.x, .y = 2.58, .z = pos.z }, 3.68, 0.65, 7.68, col);
+                } else if (btype == .coal_mine) {
+                    rl.drawCube(.{ .x = pos.x, .y = 0.20, .z = pos.z }, 7.84, 0.40, 7.84, col);
+                    rl.drawCube(.{ .x = pos.x + 1.8, .y = 1.6, .z = pos.z }, 3.4, 2.4, 5.8, col);
+                    rl.drawCube(.{ .x = pos.x + 1.8, .y = 3.0, .z = pos.z }, 3.6, 0.5, 6.0, col);
+                    rl.drawCube(.{ .x = pos.x - 1.6, .y = 2.4, .z = pos.z }, 3.2, 4.6, 3.2, col);
+                    rl.drawCube(.{ .x = pos.x + 2.8, .y = 3.8, .z = pos.z - 2.0 }, 0.65, 3.2, 0.65, col);
                 } else {
                     rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, col);
                     rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, col);
@@ -2547,9 +2830,10 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
     for (buildings[0..buildings_count]) |b| {
         const is_lab = (b.btype == .lab);
         const is_gh = (b.btype == .greenhouse);
-        const w_sz: f32 = if (is_lab) 5.8 else 3.84;
-        const l_sz: f32 = if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
-        const h_sz: f32 = if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
+        const is_cm = (b.btype == .coal_mine);
+        const w_sz: f32 = if (is_cm) 7.84 else if (is_lab) 5.8 else 3.84;
+        const l_sz: f32 = if (is_cm) 7.84 else if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
+        const h_sz: f32 = if (is_cm) 4.6 else if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
 
         if (b.state == .constructing or b.state == .dismantling) {
             const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
@@ -2563,6 +2847,11 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.61, .z = b.pos.z }, 3.68, 0.5, 7.68, rl.Color.init(30, 60, 50, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.56, .z = b.pos.z }, 3.5, 1.4, 7.5, rl.Color.init(45, 120, 95, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.58, .z = b.pos.z }, 3.68, 0.65, 7.68, rl.Color.init(55, 140, 110, 255));
+            } else if (is_cm) {
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.20, .z = b.pos.z }, 7.84, 0.40, 7.84, rl.Color.init(45, 48, 55, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x + 1.8, .y = 1.6, .z = b.pos.z }, 3.4, 2.4, 5.8, rl.Color.init(55, 58, 68, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 1.6, .y = 2.4, .z = b.pos.z - 0.2 }, 3.4, 4.6, 3.4, rl.Color.init(65, 70, 82, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x + 2.8, .y = 3.8, .z = b.pos.z - 2.0 }, 0.65, 3.2, 0.65, rl.Color.init(50, 52, 60, 255));
             } else {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, rl.Color.init(35, 25, 20, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, rl.Color.init(30, 36, 42, 255));
@@ -2609,6 +2898,11 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                     rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.84, 0.36, 7.84, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.56, .z = pos.z }, 3.5, 1.4, 7.5, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 2.58, .z = pos.z }, 3.68, 0.65, 7.68, wire_col);
+                } else if (btype == .coal_mine) {
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 0.20, .z = pos.z }, 7.84, 0.40, 7.84, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x + 1.8, .y = 1.6, .z = pos.z }, 3.4, 2.4, 5.8, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 1.6, .y = 2.4, .z = pos.z }, 3.2, 4.6, 3.2, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x + 2.8, .y = 3.8, .z = pos.z - 2.0 }, 0.65, 3.2, 0.65, wire_col);
                 } else {
                     rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, wire_col);
@@ -2958,7 +3252,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     );
                 }
             }
-        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab)) {
+        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine)) {
             const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
             if (screen_pos.x > -100 and screen_pos.x < sw + 100 and screen_pos.y > -100 and screen_pos.y < sh + 100) {
                 const badge_w: f32 = 175.0;
@@ -2974,10 +3268,17 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 const is_hovered = (hovered_building == b.id);
 
                 const is_gh = (b.btype == .greenhouse);
-                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else LAB_CAPACITY;
+                const is_lab_b = (b.btype == .lab);
+                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else if (is_lab_b) LAB_CAPACITY else COAL_MINE_CAPACITY;
                 const assigned = b.assigned_workers;
 
-                const primary_color = if (is_gh) rl.Color.init(60, 195, 125, 255) else rl.Color.init(100, 215, 255, 255);
+                const primary_color = if (is_gh)
+                    rl.Color.init(60, 195, 125, 255)
+                else if (is_lab_b)
+                    rl.Color.init(100, 215, 255, 255)
+                else
+                    rl.Color.init(245, 175, 65, 255);
+
                 const bg_color = if (is_selected)
                     rl.Color.init(35, 48, 65, 250)
                 else if (is_hovered)
@@ -2997,7 +3298,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 rl.drawRectangle(@intFromFloat(br.x + 8), @intFromFloat(br.y + 7), 12, 14, primary_color);
 
                 // Building Name
-                const name_text = if (is_gh) "Greenhouse" else "Lab";
+                const name_text = if (is_gh) "Greenhouse" else if (is_lab_b) "Lab" else "Coal Mine";
                 rl.drawText(
                     name_text,
                     @intFromFloat(br.x + 25),
@@ -3079,6 +3380,7 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
 
             const is_lab = (b.btype == .lab);
             const is_gh = (b.btype == .greenhouse);
+            const is_cm = (b.btype == .coal_mine);
 
             const border_color = if (b.state == .dismantling)
                 COLOR_DISMANTLE_SCAFFOLD
@@ -3086,6 +3388,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 rl.Color.init(60, 195, 125, 255)
             else if (is_lab)
                 rl.Color.init(65, 150, 195, 255)
+            else if (is_cm)
+                rl.Color.init(235, 165, 60, 255)
             else
                 rl.Color.init(184, 138, 72, 255);
 
@@ -3104,15 +3408,37 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
             rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(panel_x, panel_y, panel_w, panel_h), 0.04, 8, 2.0, border_color);
 
             // Title icon + text
-            const icon_color = if (is_gh) COLOR_GREENHOUSE_ROOF else if (is_lab) COLOR_LAB_DOME else COLOR_WOOD_PILE;
+            const icon_color = if (is_gh)
+                COLOR_GREENHOUSE_ROOF
+            else if (is_lab)
+                COLOR_LAB_DOME
+            else if (is_cm)
+                COLOR_COAL_MINE_HEADFRAME
+            else
+                COLOR_WOOD_PILE;
             rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, icon_color);
             const title_str = if (is_gh)
                 fmt("GREENHOUSE #{d}", .{bid + 1})
             else if (is_lab)
                 fmt("LAB #{d}", .{bid + 1})
+            else if (is_cm)
+                fmt("COAL MINE #{d}", .{bid + 1})
             else
                 fmt("HOUSE #{d}", .{bid + 1});
-            rl.drawText(title_str, @intFromFloat(panel_x + 32), @intFromFloat(panel_y + 10), 16, if (is_gh) rl.Color.init(110, 240, 160, 255) else if (is_lab) rl.Color.init(130, 225, 255, 255) else rl.Color.init(245, 205, 70, 255));
+            rl.drawText(
+                title_str,
+                @intFromFloat(panel_x + 32),
+                @intFromFloat(panel_y + 10),
+                16,
+                if (is_gh)
+                    rl.Color.init(110, 240, 160, 255)
+                else if (is_lab)
+                    rl.Color.init(130, 225, 255, 255)
+                else if (is_cm)
+                    rl.Color.init(250, 195, 80, 255)
+                else
+                    rl.Color.init(245, 205, 70, 255),
+            );
 
             // Close button [x]
             if (!is_paused) {
@@ -3126,6 +3452,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 fmt("Agricultural Complex | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else if (is_lab)
                 fmt("Research Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
+            else if (is_cm)
+                fmt("Extraction Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else
                 fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z });
             rl.drawText(subtitle, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
@@ -3237,6 +3565,53 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                         if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
                             if (b.assigned_workers > 0) {
                                 assignLabWorkers(bid, -b.assigned_workers);
+                            }
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds wood upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                } else if (is_cm) {
+                    const status_str = if (b.assigned_workers >= COAL_MINE_CAPACITY) "STATUS: FULL EXTRACTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL EXTRACTION" else "STATUS: UNSTAFFED (IDLE)";
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 230, 140, 255) else rl.Color.init(245, 195, 65, 255));
+
+                    const staff_str = fmt("Staff: {d} / {d} Miners", .{ b.assigned_workers, COAL_MINE_CAPACITY });
+                    rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
+
+                    const yield_str = fmt("Yield: +{d:.1} Coal/sec", .{@as(f32, @floatFromInt(b.assigned_workers)) * COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC});
+                    rl.drawText(yield_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, rl.Color.init(245, 205, 80, 255));
+
+                    // Worker control buttons: None, -1, +1, Max
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 104, 48, 22), "None")) {
+                            assignCoalMineWorkers(bid, -b.assigned_workers);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 68, panel_y + 104, 38, 22), "-1")) {
+                            assignCoalMineWorkers(bid, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 112, panel_y + 104, 38, 22), "+1")) {
+                            assignCoalMineWorkers(bid, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 156, panel_y + 104, 48, 22), "Max")) {
+                            assignCoalMineWorkers(bid, COAL_MINE_CAPACITY);
+                        }
+                    }
+
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
+                            if (b.assigned_workers > 0) {
+                                assignCoalMineWorkers(bid, -b.assigned_workers);
                             }
                             buildings[bid].state = .dismantling;
                             buildings[bid].progress = 1.0;
@@ -3394,10 +3769,16 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
         }
         rl.drawText("SCIENCE", 278, @intFromFloat(tab_y + 7), 13, if (is_science) rl.Color.init(130, 225, 255, 255) else rl.Color.init(140, 155, 175, 255));
 
-        // Inactive tabs
+        // Tab 4: "Resources"
+        const is_resources = (active_build_tab == .resources);
         const tab_res_rect = rl.Rectangle.init(370.0, tab_y, tab_w + 10, tab_h);
-        rl.drawRectangleRounded(tab_res_rect, 0.25, 4, rl.Color.init(24, 28, 36, 140));
-        rl.drawText("RESOURCES", 382, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 100, 115, 255));
+        const res_hovered = rl.checkCollisionPointRec(mouse_pos, tab_res_rect);
+        rl.drawRectangleRounded(tab_res_rect, 0.25, 4, if (is_resources) rl.Color.init(48, 42, 34, 255) else if (res_hovered) rl.Color.init(42, 38, 32, 220) else rl.Color.init(24, 28, 36, 180));
+        if (is_resources) {
+            rl.drawRectangleRoundedLinesEx(tab_res_rect, 0.25, 4, 1.5, rl.Color.init(245, 180, 60, 255));
+            rl.drawRectangle(372, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w + 6), 2, rl.Color.init(245, 180, 60, 255));
+        }
+        rl.drawText("RESOURCES", 382, @intFromFloat(tab_y + 7), 12, if (is_resources) rl.Color.init(255, 205, 80, 255) else rl.Color.init(140, 155, 175, 255));
 
         const tab_heat_rect = rl.Rectangle.init(498.0, tab_y, tab_w, tab_h);
         rl.drawRectangleRounded(tab_heat_rect, 0.25, 4, rl.Color.init(24, 28, 36, 140));
@@ -3599,6 +3980,86 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
                     if (can_afford) rl.Color.init(130, 220, 255, 255) else rl.Color.init(255, 100, 90, 255),
                 );
             }
+        } else if (active_build_tab == .resources) {
+            const is_unlocked = (coal_mine_research_state == .completed);
+            const card_x: f32 = 16.0;
+            const card_y: f32 = strip_y + 44.0;
+            const card_w: f32 = 260.0;
+            const card_h: f32 = 92.0;
+            const card_rect = rl.Rectangle.init(card_x, card_y, card_w, card_h);
+            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect);
+
+            const current_wood = stockpiles[@intFromEnum(Resource.wood)];
+            const can_afford = current_wood >= COAL_MINE_WOOD_COST;
+
+            if (is_unlocked) {
+                const card_bg = if (card_hovered)
+                    rl.Color.init(44, 38, 32, 255)
+                else
+                    rl.Color.init(30, 26, 24, 240);
+
+                const card_border = if (card_hovered)
+                    rl.Color.init(250, 195, 75, 255)
+                else
+                    rl.Color.init(115, 85, 55, 255);
+
+                rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered) 2.0 else 1.2, card_border);
+
+                // Mini Coal Mine Preview Icon
+                rl.drawRectangle(@intFromFloat(card_x + 10), @intFromFloat(card_y + 14), 30, 20, COLOR_COAL_MINE_WALLS);
+                rl.drawRectangle(@intFromFloat(card_x + 8), @intFromFloat(card_y + 10), 34, 6, COLOR_COAL_MINE_ROOF);
+                rl.drawRectangle(@intFromFloat(card_x + 28), @intFromFloat(card_y + 4), 6, 8, COLOR_COAL_MINE_CHIMNEY);
+                rl.drawRectangleLines(@intFromFloat(card_x + 14), @intFromFloat(card_y + 16), 14, 18, COLOR_COAL_MINE_HEADFRAME);
+
+                // Building Name
+                rl.drawText("Coal Mine", @intFromFloat(card_x + 50), @intFromFloat(card_y + 10), 16, rl.Color.white);
+
+                // Cost Badge
+                const cost_pill_rect = rl.Rectangle.init(card_x + 50, card_y + 32, 102, 20);
+                rl.drawRectangleRounded(cost_pill_rect, 0.3, 4, if (can_afford) rl.Color.init(28, 55, 38, 255) else rl.Color.init(60, 28, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cost_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(80, 185, 115, 255) else rl.Color.init(215, 70, 70, 255));
+                const cost_text = fmt("Cost: {d} Wood", .{@as(i32, @intFromFloat(COAL_MINE_WOOD_COST))});
+                rl.drawText(cost_text, @intFromFloat(card_x + 56), @intFromFloat(card_y + 36), 11, if (can_afford) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
+
+                // Footprint, Capacity & Builder Specs
+                rl.drawText("Footprint: 4x4 Grid Squares", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(245, 195, 75, 255));
+                rl.drawText("Staff: 10 Workers | Produces 8.0 Coal/sec", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(160, 180, 205, 255));
+
+                // Click instruction tip
+                if (card_hovered) {
+                    rl.drawText(
+                        if (can_afford) "Click to select and place in the snow" else "Cannot afford (Requires 40 Wood)",
+                        @intFromFloat(card_x + card_w + 16),
+                        @intFromFloat(card_y + 36),
+                        13,
+                        if (can_afford) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
+                    );
+                }
+            } else {
+                // Locked state
+                const card_bg = rl.Color.init(20, 24, 30, 210);
+                const card_border = rl.Color.init(50, 60, 72, 200);
+
+                rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, 1.0, card_border);
+
+                // Lock icon
+                rl.drawRectangle(@intFromFloat(card_x + 14), @intFromFloat(card_y + 16), 24, 22, rl.Color.init(45, 52, 64, 255));
+                rl.drawRectangleLines(@intFromFloat(card_x + 14), @intFromFloat(card_y + 16), 24, 22, rl.Color.init(75, 88, 105, 255));
+                rl.drawText("?", @intFromFloat(card_x + 22), @intFromFloat(card_y + 18), 16, rl.Color.init(140, 155, 175, 255));
+
+                // Building Name
+                rl.drawText("Coal Mine", @intFromFloat(card_x + 50), @intFromFloat(card_y + 10), 16, rl.Color.init(140, 150, 165, 255));
+
+                // Locked badge
+                const locked_badge = rl.Rectangle.init(card_x + 50, card_y + 32, 108, 18);
+                rl.drawRectangleRounded(locked_badge, 0.3, 4, rl.Color.init(40, 48, 58, 255));
+                rl.drawText("[LOCKED - RESEARCH]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 35), 9, rl.Color.init(245, 195, 65, 255));
+
+                rl.drawText("Requires 'Coal Mine' research in Resources tab", @intFromFloat(card_x + 50), @intFromFloat(card_y + 56), 10, rl.Color.init(160, 175, 195, 255));
+                rl.drawText("4x4 Grid | Staff: 10 | Produces 8.0 Coal/sec", @intFromFloat(card_x + 50), @intFromFloat(card_y + 70), 10, rl.Color.init(120, 135, 150, 255));
+            }
         }
     }
 }
@@ -3707,14 +4168,25 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
         }
         rl.drawText("FOOD", 170, @intFromFloat(tab_y + 7), 13, if (is_food) rl.Color.init(130, 245, 150, 255) else rl.Color.init(120, 140, 165, 255));
 
-        // Inactive tabs
-        const tab_eff_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
-        rl.drawRectangleRounded(tab_eff_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
-        rl.drawText("EFFICIENCY", 268, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+        // Tab 3: "RESOURCES"
+        const is_res = (active_research_tab == .resources);
+        const tab_res_rect = rl.Rectangle.init(252.0, tab_y, tab_w, tab_h);
+        const res_hovered = rl.checkCollisionPointRec(mouse_pos, tab_res_rect);
+        rl.drawRectangleRounded(tab_res_rect, 0.25, 4, if (is_res) rl.Color.init(48, 40, 30, 255) else if (res_hovered) rl.Color.init(40, 35, 28, 220) else rl.Color.init(22, 28, 38, 180));
+        if (is_res) {
+            rl.drawRectangleRoundedLinesEx(tab_res_rect, 0.25, 4, 1.5, rl.Color.init(245, 185, 65, 255));
+            rl.drawRectangle(254, @intFromFloat(tab_y + tab_h - 2), @intFromFloat(tab_w - 4), 2, rl.Color.init(245, 185, 65, 255));
+        }
+        rl.drawText("RESOURCES", 262, @intFromFloat(tab_y + 7), 12, if (is_res) rl.Color.init(255, 215, 90, 255) else rl.Color.init(120, 140, 165, 255));
 
-        const tab_exp_rect = rl.Rectangle.init(370.0, tab_y, tab_w + 10, tab_h);
+        // Inactive tabs
+        const tab_eff_rect = rl.Rectangle.init(370.0, tab_y, tab_w, tab_h);
+        rl.drawRectangleRounded(tab_eff_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
+        rl.drawText("EFFICIENCY", 386, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+
+        const tab_exp_rect = rl.Rectangle.init(488.0, tab_y, tab_w + 10, tab_h);
         rl.drawRectangleRounded(tab_exp_rect, 0.25, 4, rl.Color.init(22, 28, 38, 180));
-        rl.drawText("EXPLORATION", 384, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
+        rl.drawText("EXPLORATION", 502, @intFromFloat(tab_y + 7), 12, rl.Color.init(90, 105, 125, 255));
 
         // Close button [x]
         const close_btn_rect = rl.Rectangle.init(sw - 36.0, tab_y, 24.0, 24.0);
@@ -3876,6 +4348,115 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(80, 220, 130, 255));
                 rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, rl.Color.init(110, 240, 150, 255));
             }
+        } else if (active_research_tab == .resources) {
+            // Coal Mine Research Card
+            const card_rect = getCoalMineCardRect(strip_y);
+            const card_x: f32 = card_rect.x;
+            const card_y: f32 = card_rect.y;
+            const cancel_btn_rect = getCoalMineCancelBtnRect(strip_y);
+            const cancel_hovered = (coal_mine_research_state == .researching) and rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect);
+            const card_hovered = rl.checkCollisionPointRec(mouse_pos, card_rect) and !cancel_hovered;
+
+            const current_wood = stockpiles[@intFromEnum(Resource.wood)];
+            const current_steel = stockpiles[@intFromEnum(Resource.steel)];
+            const can_afford = current_wood >= COAL_MINE_RESEARCH_WOOD_COST and current_steel >= COAL_MINE_RESEARCH_STEEL_COST;
+
+            const card_bg = if (card_hovered and coal_mine_research_state == .available)
+                rl.Color.init(42, 36, 30, 255)
+            else
+                rl.Color.init(28, 24, 22, 240);
+
+            const card_border = if (card_hovered and coal_mine_research_state == .available)
+                rl.Color.init(245, 185, 65, 255)
+            else
+                rl.Color.init(100, 75, 50, 255);
+
+            rl.drawRectangleRounded(card_rect, 0.12, 6, card_bg);
+            rl.drawRectangleRoundedLinesEx(card_rect, 0.12, 6, if (card_hovered and coal_mine_research_state == .available) 2.0 else 1.2, card_border);
+
+            // Icon: Mining headframe / coal symbol
+            rl.drawRectangle(@intFromFloat(card_x + 12), @intFromFloat(card_y + 12), 26, 26, rl.Color.init(35, 30, 28, 255));
+            rl.drawRectangleLines(@intFromFloat(card_x + 12), @intFromFloat(card_y + 12), 26, 26, rl.Color.init(210, 150, 60, 255));
+            rl.drawText("M", @intFromFloat(card_x + 19), @intFromFloat(card_y + 15), 18, rl.Color.init(245, 190, 70, 255));
+
+            rl.drawText("Coal Mine", @intFromFloat(card_x + 48), @intFromFloat(card_y + 10), 15, rl.Color.white);
+            rl.drawText("Resource Extraction Project", @intFromFloat(card_x + 48), @intFromFloat(card_y + 28), 11, rl.Color.init(220, 185, 130, 255));
+
+            if (coal_mine_research_state == .available) {
+                // Cost badge
+                const cost_text = fmt("Cost: {d} Wood, {d} Steel | Time: 2m 00s", .{
+                    @as(i32, @intFromFloat(COAL_MINE_RESEARCH_WOOD_COST)),
+                    @as(i32, @intFromFloat(COAL_MINE_RESEARCH_STEEL_COST)),
+                });
+                rl.drawText(cost_text, @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, if (can_afford) rl.Color.init(245, 205, 120, 255) else rl.Color.init(255, 110, 110, 255));
+
+                // Button pill
+                const btn_pill_rect = rl.Rectangle.init(card_x + 48, card_y + 64, 210, 20);
+                rl.drawRectangleRounded(btn_pill_rect, 0.3, 4, if (can_afford) (if (card_hovered) rl.Color.init(85, 60, 30, 255) else rl.Color.init(65, 45, 25, 255)) else rl.Color.init(55, 25, 25, 255));
+                rl.drawRectangleRoundedLinesEx(btn_pill_rect, 0.3, 4, 1.0, if (can_afford) rl.Color.init(215, 160, 60, 255) else rl.Color.init(180, 60, 60, 255));
+                rl.drawText(if (can_afford) "Click to Research (100W, 100S)" else "Need 100 Wood, 100 Steel", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, if (can_afford) rl.Color.white else rl.Color.init(255, 130, 130, 255));
+            } else if (coal_mine_research_state == .researching) {
+                const total_researchers = getTotalLabWorkers();
+                const pct = getActiveResearchProgress();
+                const speed_mult = getResearchSpeedMultiplier();
+                if (speed_mult > 0.0) {
+                    const rem_sec_f = (COAL_MINE_RESEARCH_DURATION - coal_mine_research_progress) / speed_mult;
+                    const rem = @max(0, @as(i32, @intFromFloat(rem_sec_f)));
+                    const rem_min = @divTrunc(rem, 60);
+                    const rem_sec = @rem(rem, 60);
+
+                    const speed_pct = @as(i32, @intFromFloat(speed_mult * 100.0));
+                    const staff_info = if (total_researchers > getMaxEffectiveResearchWorkers())
+                        fmt("{d} Staff (Cap 4 Labs), {d}%", .{ total_researchers, speed_pct })
+                    else
+                        fmt("{d} Staff, {d}%", .{ total_researchers, speed_pct });
+
+                    _ = rl.drawText(
+                        fmt("Researching: {d}% | ~{d}m {d:0>2}s left ({s})", .{
+                            @as(i32, @intFromFloat(pct * 100.0)),
+                            rem_min,
+                            rem_sec,
+                            staff_info,
+                        }),
+                        @intFromFloat(card_x + 48),
+                        @intFromFloat(card_y + 46),
+                        11,
+                        rl.Color.init(245, 205, 100, 255),
+                    );
+                } else {
+                    _ = rl.drawText(
+                        fmt("PAUSED: 0 Staff in Labs (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
+                        @intFromFloat(card_x + 48),
+                        @intFromFloat(card_y + 46),
+                        11,
+                        rl.Color.init(255, 120, 100, 255),
+                    );
+                }
+
+                // Progress Bar
+                const bar_x: f32 = card_x + 48.0;
+                const bar_y: f32 = card_y + 66.0;
+                const bar_w: f32 = cancel_btn_rect.x - 10.0 - bar_x;
+                const bar_h: f32 = 14.0;
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
+                rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, if (total_researchers > 0) rl.Color.init(245, 185, 65, 255) else rl.Color.init(180, 80, 70, 255));
+
+                // Cancel Button
+                rl.drawRectangleRounded(cancel_btn_rect, 0.3, 4, if (cancel_hovered) rl.Color.init(170, 40, 45, 255) else rl.Color.init(55, 25, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cancel_btn_rect, 0.3, 4, 1.0, if (cancel_hovered) rl.Color.init(255, 110, 110, 255) else rl.Color.init(180, 60, 65, 255));
+                const cancel_tw = rl.measureText("Cancel", 11);
+                const cancel_tx = @as(i32, @intFromFloat(cancel_btn_rect.x + (cancel_btn_rect.width - @as(f32, @floatFromInt(cancel_tw))) / 2.0));
+                const cancel_ty = @as(i32, @intFromFloat(cancel_btn_rect.y + 4.5));
+                rl.drawText("Cancel", cancel_tx, cancel_ty, 11, if (cancel_hovered) rl.Color.white else rl.Color.init(255, 180, 180, 255));
+            } else if (coal_mine_research_state == .completed) {
+                rl.drawText("Unlocks 4x4 Coal Mine extraction building", @intFromFloat(card_x + 48), @intFromFloat(card_y + 46), 11, rl.Color.init(220, 205, 150, 255));
+
+                const comp_rect = rl.Rectangle.init(card_x + 48, card_y + 64, 160, 20);
+                rl.drawRectangleRounded(comp_rect, 0.3, 4, rl.Color.init(55, 45, 25, 255));
+                rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(245, 185, 65, 255));
+                rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(card_x + 54), @intFromFloat(card_y + 68), 10, rl.Color.init(255, 215, 80, 255));
+            }
         }
     }
 }
@@ -3972,12 +4553,18 @@ fn drawPopulationPopover(x: f32, y: f32) void {
             greenhouse_workers += b.assigned_workers;
         }
     }
+    var coal_mine_workers: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .completed and b.btype == .coal_mine) {
+            coal_mine_workers += b.assigned_workers;
+        }
+    }
     const lab_workers = getTotalLabWorkers();
-    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + lab_workers;
+    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + coal_mine_workers + lab_workers;
     const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
 
     const pop_w: f32 = 264.0;
-    const pop_h: f32 = 174.0;
+    const pop_h: f32 = 188.0;
 
     // Subtle drop shadow
     rl.drawRectangleRounded(
@@ -4022,7 +4609,7 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     const work_val_w = rl.measureText(work_val, 13);
     rl.drawText(work_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(work_val_w))), @intFromFloat(y + 37.0), 13, rl.Color.init(100, 235, 140, 255));
 
-    // Breakdown details - 2 rows
+    // Breakdown details - 3 rows
     rl.drawText(
         fmt("  Gatherers: {d}  |  Builders: {d}", .{ resource_workers, construction_workers }),
         @intFromFloat(x + 20.0),
@@ -4031,25 +4618,32 @@ fn drawPopulationPopover(x: f32, y: f32) void {
         rl.Color.init(140, 165, 190, 255),
     );
     rl.drawText(
-        fmt("  Farmers: {d}    |  Researchers: {d}", .{ greenhouse_workers, lab_workers }),
+        fmt("  Farmers: {d}    |  Miners: {d}", .{ greenhouse_workers, coal_mine_workers }),
         @intFromFloat(x + 20.0),
         @intFromFloat(y + 69.0),
         11,
         rl.Color.init(140, 165, 190, 255),
     );
+    rl.drawText(
+        fmt("  Researchers: {d}", .{lab_workers}),
+        @intFromFloat(x + 20.0),
+        @intFromFloat(y + 83.0),
+        11,
+        rl.Color.init(140, 165, 190, 255),
+    );
 
     // Idle Citizens row
-    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 96.0), 4.0, rl.Color.init(245, 185, 65, 255));
-    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 89.0), 13, rl.Color.init(220, 230, 240, 255));
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 110.0), 4.0, rl.Color.init(245, 185, 65, 255));
+    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 103.0), 13, rl.Color.init(220, 230, 240, 255));
     const idle_val = fmt("{d}", .{total_idle});
     const idle_val_w = rl.measureText(idle_val, 13);
-    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 89.0), 13, rl.Color.init(255, 215, 80, 255));
+    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 103.0), 13, rl.Color.init(255, 215, 80, 255));
 
     // Idle explanation
     rl.drawText(
         "  Available for new tasks & building",
         @intFromFloat(x + 24.0),
-        @intFromFloat(y + 109.0),
+        @intFromFloat(y + 123.0),
         11,
         rl.Color.init(140, 165, 190, 255),
     );
@@ -4057,17 +4651,17 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     // Separator line
     rl.drawLine(
         @intFromFloat(x + 12.0),
-        @intFromFloat(y + 129.0),
+        @intFromFloat(y + 143.0),
         @intFromFloat(x + pop_w - 12.0),
-        @intFromFloat(y + 129.0),
+        @intFromFloat(y + 143.0),
         rl.Color.init(45, 55, 70, 255),
     );
 
     // Total row
-    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 140.0), 12, rl.Color.init(180, 195, 210, 255));
+    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 154.0), 12, rl.Color.init(180, 195, 210, 255));
     const tot_val = fmt("{d}", .{total_citizens});
     const tot_val_w = rl.measureText(tot_val, 12);
-    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 140.0), 12, rl.Color.white);
+    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 154.0), 12, rl.Color.white);
 }
 
 fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.Camera3D, mouse_pos: rl.Vector2, placement_check: PlacementCheck) void {
@@ -4107,7 +4701,15 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
 
-        // Net rate calculation (Coal accounts for generator fuel consumption, Food accounts for greenhouses)
+        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses)
+        var cm_coal_rate: f32 = 0.0;
+        if (r == .coal) {
+            for (buildings[0..buildings_count]) |b| {
+                if (b.state == .completed and b.btype == .coal_mine) {
+                    cm_coal_rate += @as(f32, @floatFromInt(b.assigned_workers)) * COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC;
+                }
+            }
+        }
         var gh_food_rate: f32 = 0.0;
         if (r == .food) {
             for (buildings[0..buildings_count]) |b| {
@@ -4117,7 +4719,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
             }
         }
         const net_rate: f32 = if (r == .coal)
-            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
+            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
         else if (r == .food)
             (@as(f32, @floatFromInt(workers)) * r.gatherRate()) + gh_food_rate
         else
@@ -4370,7 +4972,13 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
 
             if (generator_active) {
                 const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
-                const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) - GENERATOR_COAL_DRAIN_PER_SEC;
+                var cm_coal_rate: f32 = 0.0;
+                for (buildings[0..buildings_count]) |b| {
+                    if (b.state == .completed and b.btype == .coal_mine) {
+                        cm_coal_rate += @as(f32, @floatFromInt(b.assigned_workers)) * COAL_MINE_COAL_RATE_PER_WORKER_PER_SEC;
+                    }
+                }
+                const net_coal = (@as(f32, @floatFromInt(coal_workers)) * COAL_GATHER_RATE_PER_WORKER_PER_SEC) + cm_coal_rate - GENERATOR_COAL_DRAIN_PER_SEC;
                 if (net_coal < -0.01) {
                     const secs_left = @max(0.0, coal_amount / (-net_coal));
                     const total_s = @as(i32, @intFromFloat(secs_left));
