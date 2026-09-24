@@ -229,6 +229,34 @@ pub var WOOD_SHACK_RESEARCH_DURATION: f32 = 120.0;
 /// Wood generated per worker per second in a Wood Shack (10 workers = 10 wood/sec)
 pub var WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC: f32 = 1.0;
 
+/// Width in grid squares for a Steel Forge (4 squares = 8.0 world units)
+pub var STEEL_FORGE_GRID_WIDTH: i32 = 4;
+/// Length in grid squares for a Steel Forge (4 squares = 8.0 world units)
+pub var STEEL_FORGE_GRID_LENGTH: i32 = 4;
+
+/// Wood cost required to construct one Steel Forge
+pub var STEEL_FORGE_WOOD_COST: f32 = 100.0;
+/// Steel cost required to construct one Steel Forge
+pub var STEEL_FORGE_STEEL_COST: f32 = 50.0;
+/// Worker capacity for a completed Steel Forge
+pub var STEEL_FORGE_CAPACITY: i32 = 10;
+/// Base construction duration in seconds when built by maximum workers
+pub var STEEL_FORGE_BASE_BUILD_TIME: f32 = 25.0;
+/// Maximum number of idle workers that can simultaneously construct a single Steel Forge
+pub var STEEL_FORGE_MAX_BUILDERS: i32 = 10;
+/// Clearance collision radius around a Steel Forge in world units
+pub var STEEL_FORGE_COLLISION_RADIUS: f32 = 5.8;
+
+/// Wood cost required to research Steel Forge in the Lab
+pub var STEEL_FORGE_RESEARCH_WOOD_COST: f32 = 25.0;
+/// Steel cost required to research Steel Forge in the Lab
+pub var STEEL_FORGE_RESEARCH_STEEL_COST: f32 = 25.0;
+/// Research duration in seconds for Steel Forge (2 minutes = 120 seconds)
+pub var STEEL_FORGE_RESEARCH_DURATION: f32 = 120.0;
+
+/// Steel generated per worker per second in a Steel Forge (10 workers = 10 steel/sec)
+pub var STEEL_FORGE_STEEL_RATE_PER_WORKER_PER_SEC: f32 = 1.0;
+
 /// Maximum number of placed buildings in the settlement
 pub const MAX_BUILDINGS: usize = 128;
 
@@ -269,6 +297,12 @@ pub var COLOR_WOOD_SHACK_FOUNDATION: rl.Color = rl.Color.init(52, 48, 44, 255); 
 pub var COLOR_WOOD_SHACK_LOGS: rl.Color = rl.Color.init(155, 105, 62, 255); // Freshly harvested timber logs
 pub var COLOR_WOOD_SHACK_CHIMNEY: rl.Color = rl.Color.init(65, 62, 58, 255); // Cast iron stovepipe
 pub var COLOR_WOOD_SHACK_PLANKS: rl.Color = rl.Color.init(175, 125, 78, 255); // Sawn timber planks
+pub var COLOR_STEEL_FORGE_WALLS: rl.Color = rl.Color.init(55, 60, 68, 255); // Heavy dark iron & reinforced soot stone
+pub var COLOR_STEEL_FORGE_ROOF: rl.Color = rl.Color.init(40, 44, 52, 255); // Dark industrial corrugated iron roof
+pub var COLOR_STEEL_FORGE_FOUNDATION: rl.Color = rl.Color.init(35, 38, 44, 255); // Reinforced granite foundation
+pub var COLOR_STEEL_FORGE_FIRE: rl.Color = rl.Color.init(255, 130, 30, 255); // Molten forge smelting hearth glow
+pub var COLOR_STEEL_FORGE_CHIMNEY: rl.Color = rl.Color.init(48, 50, 56, 255); // Heavy iron blast stack
+pub var COLOR_STEEL_FORGE_STEEL: rl.Color = rl.Color.init(160, 180, 205, 255); // Cast steel billets & anvil
 pub var COLOR_SCAFFOLDING: rl.Color = rl.Color.init(184, 138, 72, 255); // Construction scaffolding frame
 pub var COLOR_DISMANTLE_SCAFFOLD: rl.Color = rl.Color.init(205, 80, 60, 255); // Demolition/dismantling scaffolding frame
 pub var COLOR_GHOST_VALID: rl.Color = rl.Color.init(60, 215, 120, 150); // Translucent green preview
@@ -359,10 +393,11 @@ pub const CitizenRole = enum {
     working_lab,
     working_coal_mine,
     working_wood_shack,
+    working_steel_forge,
 
     pub fn toResource(self: CitizenRole) ?Resource {
         return switch (self) {
-            .idle, .working_greenhouse, .working_lab, .working_coal_mine, .working_wood_shack => null,
+            .idle, .working_greenhouse, .working_lab, .working_coal_mine, .working_wood_shack, .working_steel_forge => null,
             .gathering_coal => .coal,
             .gathering_wood => .wood,
             .gathering_steel => .steel,
@@ -386,6 +421,7 @@ pub const BuildingType = enum(usize) {
     greenhouse = 2,
     coal_mine = 3,
     wood_shack = 4,
+    steel_forge = 5,
 
     pub fn name(self: BuildingType) [:0]const u8 {
         return switch (self) {
@@ -394,6 +430,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => "Greenhouse",
             .coal_mine => "Coal Mine",
             .wood_shack => "Wood Shack",
+            .steel_forge => "Steel Forge",
         };
     }
 
@@ -404,6 +441,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_WOOD_COST,
             .coal_mine => COAL_MINE_WOOD_COST,
             .wood_shack => WOOD_SHACK_WOOD_COST,
+            .steel_forge => STEEL_FORGE_WOOD_COST,
         };
     }
 
@@ -411,6 +449,7 @@ pub const BuildingType = enum(usize) {
         return switch (self) {
             .house, .lab, .greenhouse, .coal_mine => 0.0,
             .wood_shack => WOOD_SHACK_STEEL_COST,
+            .steel_forge => STEEL_FORGE_STEEL_COST,
         };
     }
 
@@ -421,6 +460,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_CAPACITY,
             .coal_mine => COAL_MINE_CAPACITY,
             .wood_shack => WOOD_SHACK_CAPACITY,
+            .steel_forge => STEEL_FORGE_CAPACITY,
         };
     }
 
@@ -431,6 +471,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_MAX_BUILDERS,
             .coal_mine => COAL_MINE_MAX_BUILDERS,
             .wood_shack => WOOD_SHACK_MAX_BUILDERS,
+            .steel_forge => STEEL_FORGE_MAX_BUILDERS,
         };
     }
 
@@ -441,6 +482,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_BASE_BUILD_TIME,
             .coal_mine => COAL_MINE_BASE_BUILD_TIME,
             .wood_shack => WOOD_SHACK_BASE_BUILD_TIME,
+            .steel_forge => STEEL_FORGE_BASE_BUILD_TIME,
         };
     }
 
@@ -451,6 +493,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_GRID_WIDTH,
             .coal_mine => COAL_MINE_GRID_WIDTH,
             .wood_shack => WOOD_SHACK_GRID_WIDTH,
+            .steel_forge => STEEL_FORGE_GRID_WIDTH,
         };
     }
 
@@ -461,6 +504,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_GRID_LENGTH,
             .coal_mine => COAL_MINE_GRID_LENGTH,
             .wood_shack => WOOD_SHACK_GRID_LENGTH,
+            .steel_forge => STEEL_FORGE_GRID_LENGTH,
         };
     }
 
@@ -471,6 +515,7 @@ pub const BuildingType = enum(usize) {
             .greenhouse => GREENHOUSE_COLLISION_RADIUS,
             .coal_mine => COAL_MINE_COLLISION_RADIUS,
             .wood_shack => WOOD_SHACK_COLLISION_RADIUS,
+            .steel_forge => STEEL_FORGE_COLLISION_RADIUS,
         };
     }
 };
@@ -889,6 +934,8 @@ var coal_mine_research_state: ResearchState = .available;
 var coal_mine_research_progress: f32 = 0.0;
 var wood_shack_research_state: ResearchState = .available;
 var wood_shack_research_progress: f32 = 0.0;
+var steel_forge_research_state: ResearchState = .available;
+var steel_forge_research_progress: f32 = 0.0;
 var research_spinner_angle: f32 = 0.0;
 
 // ============================================================================
@@ -910,7 +957,7 @@ fn hasCompletedLab() bool {
 }
 
 fn isResearchActive() bool {
-    return (greenhouses_research_state == .researching or coal_mine_research_state == .researching or wood_shack_research_state == .researching);
+    return (greenhouses_research_state == .researching or coal_mine_research_state == .researching or wood_shack_research_state == .researching or steel_forge_research_state == .researching);
 }
 
 fn getActiveResearchProgress() f32 {
@@ -920,6 +967,8 @@ fn getActiveResearchProgress() f32 {
         return std.math.clamp(coal_mine_research_progress / COAL_MINE_RESEARCH_DURATION, 0.0, 1.0);
     } else if (wood_shack_research_state == .researching) {
         return std.math.clamp(wood_shack_research_progress / WOOD_SHACK_RESEARCH_DURATION, 0.0, 1.0);
+    } else if (steel_forge_research_state == .researching) {
+        return std.math.clamp(steel_forge_research_progress / STEEL_FORGE_RESEARCH_DURATION, 0.0, 1.0);
     }
     return 0.0;
 }
@@ -1006,6 +1055,17 @@ fn getWoodShackCancelBtnRect(strip_y: f32) rl.Rectangle {
     return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
 }
 
+fn getSteelForgeCardRect(strip_y: f32) rl.Rectangle {
+    return rl.Rectangle.init(660.0, strip_y + 44.0, 310.0, 92.0);
+}
+
+fn getSteelForgeCancelBtnRect(strip_y: f32) rl.Rectangle {
+    const card = getSteelForgeCardRect(strip_y);
+    const btn_w: f32 = 64.0;
+    const btn_h: f32 = 20.0;
+    return rl.Rectangle.init(card.x + card.width - btn_w - 12.0, card.y + 63.0, btn_w, btn_h);
+}
+
 fn cancelOngoingResearch() void {
     if (greenhouses_research_state == .researching) {
         stockpiles[@intFromEnum(Resource.wood)] += GREENHOUSES_RESEARCH_WOOD_COST;
@@ -1021,6 +1081,11 @@ fn cancelOngoingResearch() void {
         stockpiles[@intFromEnum(Resource.steel)] += WOOD_SHACK_RESEARCH_STEEL_COST;
         wood_shack_research_state = .available;
         wood_shack_research_progress = 0.0;
+    } else if (steel_forge_research_state == .researching) {
+        stockpiles[@intFromEnum(Resource.wood)] += STEEL_FORGE_RESEARCH_WOOD_COST;
+        stockpiles[@intFromEnum(Resource.steel)] += STEEL_FORGE_RESEARCH_STEEL_COST;
+        steel_forge_research_state = .available;
+        steel_forge_research_progress = 0.0;
     }
 }
 
@@ -1241,6 +1306,60 @@ fn assignWoodShackWorkers(idx: usize, delta: i32) void {
     }
 }
 
+fn assignSteelForgeWorkers(idx: usize, delta: i32) void {
+    if (idx >= buildings_count) return;
+    var b = &buildings[idx];
+    if (b.btype != .steel_forge or b.state != .completed) return;
+
+    if (delta > 0) {
+        const can_add = @min(delta, @as(i32, @intCast(citizen_mgr.getIdleCount())));
+        const space = STEEL_FORGE_CAPACITY - b.assigned_workers;
+        const to_add = @min(can_add, space);
+        var added: i32 = 0;
+        while (added < to_add) : (added += 1) {
+            if (citizen_mgr.idle_count == 0) break;
+            citizen_mgr.idle_count -= 1;
+            const id = citizen_mgr.idle_ids[citizen_mgr.idle_count];
+            citizen_mgr.role[id] = .working_steel_forge;
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(2.0, 4.5);
+            citizen_mgr.target_x[id] = b.pos.x + @cos(angle) * dist;
+            citizen_mgr.target_z[id] = b.pos.z + @sin(angle) * dist;
+            citizen_mgr.wander_timer[id] = randomFloat(2.0, 5.0);
+            b.assigned_workers += 1;
+        }
+    } else if (delta < 0) {
+        const to_remove = @min(-delta, b.assigned_workers);
+        var removed: i32 = 0;
+        while (removed < to_remove) : (removed += 1) {
+            var closest_id: ?usize = null;
+            var min_dist_sq: f32 = std.math.floatMax(f32);
+            for (0..citizen_mgr.count) |i| {
+                if (citizen_mgr.role[i] == .working_steel_forge) {
+                    const dx = citizen_mgr.pos_x[i] - b.pos.x;
+                    const dz = citizen_mgr.pos_z[i] - b.pos.z;
+                    const d_sq = dx * dx + dz * dz;
+                    if (d_sq < min_dist_sq) {
+                        min_dist_sq = d_sq;
+                        closest_id = i;
+                    }
+                }
+            }
+            if (closest_id) |cid| {
+                citizen_mgr.role[cid] = .idle;
+                citizen_mgr.idle_ids[citizen_mgr.idle_count] = @intCast(cid);
+                citizen_mgr.idle_count += 1;
+                const tgt = pickTargetForRole(.idle);
+                citizen_mgr.target_x[cid] = tgt.x;
+                citizen_mgr.target_z[cid] = tgt.z;
+                b.assigned_workers -= 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn removeBuilding(idx: usize) void {
     if (idx >= buildings_count) return;
     if (buildings[idx].btype == .greenhouse and buildings[idx].assigned_workers > 0) {
@@ -1254,6 +1373,9 @@ fn removeBuilding(idx: usize) void {
     }
     if (buildings[idx].btype == .wood_shack and buildings[idx].assigned_workers > 0) {
         assignWoodShackWorkers(idx, -buildings[idx].assigned_workers);
+    }
+    if (buildings[idx].btype == .steel_forge and buildings[idx].assigned_workers > 0) {
+        assignSteelForgeWorkers(idx, -buildings[idx].assigned_workers);
     }
     var i = idx;
     while (i + 1 < buildings_count) : (i += 1) {
@@ -1507,6 +1629,25 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
             .y = 0.0,
             .z = @sin(angle) * dist,
         };
+    } else if (role == .working_steel_forge) {
+        for (buildings[0..buildings_count]) |b| {
+            if (b.btype == .steel_forge and b.state == .completed and b.assigned_workers > 0) {
+                const angle = randomFloat(0.0, std.math.pi * 2.0);
+                const dist = randomFloat(2.0, 4.5);
+                return .{
+                    .x = b.pos.x + @cos(angle) * dist,
+                    .y = 0.0,
+                    .z = b.pos.z + @sin(angle) * dist,
+                };
+            }
+        }
+        const angle = randomFloat(0.0, std.math.pi * 2.0);
+        const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+        return .{
+            .x = @cos(angle) * dist,
+            .y = 0.0,
+            .z = @sin(angle) * dist,
+        };
     } else if (role.toResource()) |res| {
         if (isPileDepleted(res)) {
             const angle = randomFloat(0.0, std.math.pi * 2.0);
@@ -1582,6 +1723,8 @@ fn initGame() void {
     coal_mine_research_progress = 0.0;
     wood_shack_research_state = .available;
     wood_shack_research_progress = 0.0;
+    steel_forge_research_state = .available;
+    steel_forge_research_progress = 0.0;
     research_spinner_angle = 0.0;
     placing_building = null;
     selected_building = null;
@@ -1652,7 +1795,7 @@ fn getBuildingDialogRect(b: Building, camera: rl.Camera3D, sw: f32, sh: f32) ?rl
         return null;
     }
 
-    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack);
+    const is_worker_facility = (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack or b.btype == .steel_forge);
     const card_w: f32 = 250.0;
     const card_h: f32 = if (is_worker_facility and b.state == .completed) 226.0 else 188.0;
 
@@ -2065,6 +2208,16 @@ pub fn main() !void {
                         } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
                             assignWoodShackWorkers(s_bid, WOOD_SHACK_CAPACITY);
                         }
+                    } else if (buildings[s_bid].btype == .steel_forge) {
+                        if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                            assignSteelForgeWorkers(s_bid, 1);
+                        } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
+                            assignSteelForgeWorkers(s_bid, -1);
+                        } else if (rl.isKeyPressed(.c) or rl.isKeyPressed(.n)) {
+                            assignSteelForgeWorkers(s_bid, -buildings[s_bid].assigned_workers);
+                        } else if (rl.isKeyPressed(.a) or rl.isKeyPressed(.m)) {
+                            assignSteelForgeWorkers(s_bid, STEEL_FORGE_CAPACITY);
+                        }
                     }
                 }
             }
@@ -2168,8 +2321,8 @@ pub fn main() !void {
                     if (hit.hit) {
                         hovered_building = b.id;
                     }
-                    // Also check collision against floating badge for completed Greenhouse, Lab, Coal Mine & Wood Shack (when not selected)
-                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack)) {
+                    // Also check collision against floating badge for completed Greenhouse, Lab, Coal Mine, Wood Shack & Steel Forge (when not selected)
+                    if (selected_building != b.id and b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack or b.btype == .steel_forge)) {
                         const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
                         const badge_rect = rl.Rectangle.init(screen_pos.x - 175.0 / 2.0, screen_pos.y - 28.0 / 2.0, 175.0, 28.0);
                         if (rl.checkCollisionPointRec(mouse_pos, badge_rect)) {
@@ -2188,7 +2341,8 @@ pub fn main() !void {
             const in_res_cancel = research_menu_open and (
                 (active_research_tab == .food and greenhouses_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getGreenhousesCancelBtnRect(strip_y))) or
                 (active_research_tab == .resources and coal_mine_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getCoalMineCancelBtnRect(strip_y))) or
-                (active_research_tab == .resources and wood_shack_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getWoodShackCancelBtnRect(strip_y)))
+                (active_research_tab == .resources and wood_shack_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getWoodShackCancelBtnRect(strip_y))) or
+                (active_research_tab == .resources and steel_forge_research_state == .researching and rl.checkCollisionPointRec(mouse_pos, getSteelForgeCancelBtnRect(strip_y)))
             );
 
             // Set cursor style
@@ -2318,11 +2472,21 @@ pub fn main() !void {
                                 }
                             }
                             if (wood_shack_research_state == .completed) {
-                                const ws_card_rect = rl.Rectangle.init(280.0, strip_y + 44.0, 260.0, 92.0);
+                                const ws_card_rect = rl.Rectangle.init(286.0, strip_y + 44.0, 260.0, 92.0);
                                 if (rl.checkCollisionPointRec(mouse_pos, ws_card_rect)) {
                                     if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.wood_shack.woodCost() and
                                         stockpiles[@intFromEnum(Resource.steel)] >= BuildingType.wood_shack.steelCost()) {
                                         placing_building = .wood_shack;
+                                        build_menu_open = false;
+                                    }
+                                }
+                            }
+                            if (steel_forge_research_state == .completed) {
+                                const sf_card_rect = rl.Rectangle.init(556.0, strip_y + 44.0, 260.0, 92.0);
+                                if (rl.checkCollisionPointRec(mouse_pos, sf_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= BuildingType.steel_forge.woodCost() and
+                                        stockpiles[@intFromEnum(Resource.steel)] >= BuildingType.steel_forge.steelCost()) {
+                                        placing_building = .steel_forge;
                                         build_menu_open = false;
                                     }
                                 }
@@ -2402,6 +2566,25 @@ pub fn main() !void {
                                     cancelOngoingResearch();
                                 }
                             }
+
+                            if (steel_forge_research_state == .available and !isResearchActive()) {
+                                const sf_card_rect = getSteelForgeCardRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, sf_card_rect)) {
+                                    if (stockpiles[@intFromEnum(Resource.wood)] >= STEEL_FORGE_RESEARCH_WOOD_COST and
+                                        stockpiles[@intFromEnum(Resource.steel)] >= STEEL_FORGE_RESEARCH_STEEL_COST and
+                                        hasCompletedLab()) {
+                                        stockpiles[@intFromEnum(Resource.wood)] -= STEEL_FORGE_RESEARCH_WOOD_COST;
+                                        stockpiles[@intFromEnum(Resource.steel)] -= STEEL_FORGE_RESEARCH_STEEL_COST;
+                                        steel_forge_research_state = .researching;
+                                        steel_forge_research_progress = 0.0;
+                                    }
+                                }
+                            } else if (steel_forge_research_state == .researching) {
+                                const cancel_btn_rect = getSteelForgeCancelBtnRect(strip_y);
+                                if (rl.checkCollisionPointRec(mouse_pos, cancel_btn_rect)) {
+                                    cancelOngoingResearch();
+                                }
+                            }
                         }
                     } else if (!in_ui) {
                         var clicked_pile: ?Resource = null;
@@ -2470,6 +2653,15 @@ pub fn main() !void {
                         wood_shack_research_state = .completed;
                     }
                 }
+            } else if (steel_forge_research_state == .researching) {
+                const speed = getResearchSpeedMultiplier();
+                if (speed > 0.0) {
+                    steel_forge_research_progress += speed * dt;
+                    if (steel_forge_research_progress >= STEEL_FORGE_RESEARCH_DURATION) {
+                        steel_forge_research_progress = STEEL_FORGE_RESEARCH_DURATION;
+                        steel_forge_research_state = .completed;
+                    }
+                }
             }
 
             // 1. Generator coal fuel consumption
@@ -2504,7 +2696,7 @@ pub fn main() !void {
                 }
             }
 
-            // 2b. Greenhouse Food, Coal Mine Coal, and Wood Shack Wood Production
+            // 2b. Greenhouse Food, Coal Mine Coal, Wood Shack Wood, and Steel Forge Steel Production
             for (buildings[0..buildings_count]) |*b| {
                 if (b.state == .completed and b.btype == .greenhouse) {
                     if (b.assigned_workers > 0) {
@@ -2520,6 +2712,11 @@ pub fn main() !void {
                     if (b.assigned_workers > 0) {
                         const wood_rate = @as(f32, @floatFromInt(b.assigned_workers)) * WOOD_SHACK_WOOD_RATE_PER_WORKER_PER_SEC;
                         stockpiles[@intFromEnum(Resource.wood)] += wood_rate * dt;
+                    }
+                } else if (b.state == .completed and b.btype == .steel_forge) {
+                    if (b.assigned_workers > 0) {
+                        const steel_rate = @as(f32, @floatFromInt(b.assigned_workers)) * STEEL_FORGE_STEEL_RATE_PER_WORKER_PER_SEC;
+                        stockpiles[@intFromEnum(Resource.steel)] += steel_rate * dt;
                     }
                 }
             }
@@ -3093,6 +3290,83 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                 // Hanging lantern on sawing shelter post
                 rl.drawCube(.{ .x = b.pos.x + 1.2, .y = 2.3, .z = b.pos.z + 0.9 }, 0.18, 0.26, 0.18, win_col);
             }
+        } else if (b.btype == .steel_forge) {
+            const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
+            if (b.state == .constructing or b.state == .dismantling) {
+                // Foundation slab (7.84 x 0.36 x 7.84)
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, scaf_col);
+
+                // 8 scaffolding iron posts around 4x4 perimeter
+                const post_h = @max(0.6, 4.4 * b.progress);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z - 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x, .y = post_h / 2.0, .z = b.pos.z + 3.5 }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x - 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 3.5, .y = post_h / 2.0, .z = b.pos.z }, 0.4, post_h, 0.4, COLOR_STEEL_PILE);
+
+                // Partial rising foundry walls
+                const wall_h = 2.4 * b.progress;
+                if (wall_h > 0.15) {
+                    rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 0.36 + wall_h / 2.0, .z = b.pos.z - 0.9 }, 4.4, wall_h, 5.2, COLOR_STEEL_FORGE_WALLS);
+                }
+            } else {
+                // Completed Steel Forge (4x4 footprint)
+                // Reinforced granite foundation slab
+                rl.drawCube(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, COLOR_STEEL_FORGE_FOUNDATION);
+
+                // Main Smelting Hall & Cupola Furnace Building (left/rear)
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 1.56, .z = b.pos.z - 0.9 }, 4.4, 2.4, 5.2, COLOR_STEEL_FORGE_WALLS);
+                // Sloped industrial corrugated iron roof
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 3.03, .z = b.pos.z - 0.9 }, 4.8, 0.65, 5.6, COLOR_STEEL_FORGE_ROOF);
+
+                // Heavy blast furnace smokestack with iron bands
+                rl.drawCube(.{ .x = b.pos.x - 2.8, .y = 3.8, .z = b.pos.z - 2.6 }, 0.85, 3.4, 0.85, COLOR_STEEL_FORGE_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x - 2.8, .y = 5.55, .z = b.pos.z - 2.6 }, 1.1, 0.25, 1.1, rl.Color.init(30, 32, 38, 255));
+                // Blast stack crown flame glow
+                rl.drawCube(.{ .x = b.pos.x - 2.8, .y = 5.75, .z = b.pos.z - 2.6 }, 0.6, 0.2, 0.6, COLOR_STEEL_FORGE_FIRE);
+
+                // Furnace smelting hearth arch opening (front) with intense orange glow
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 1.0, .z = b.pos.z + 1.72 }, 1.6, 1.4, 0.14, COLOR_STEEL_FORGE_FOUNDATION);
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 0.9, .z = b.pos.z + 1.74 }, 1.1, 1.0, 0.12, COLOR_STEEL_FORGE_FIRE);
+
+                // Glowing foundry windows / heat vents
+                const win_col = if (b.is_warm) rl.Color.init(255, 170, 60, 255) else rl.Color.init(220, 120, 40, 255);
+                rl.drawCube(.{ .x = b.pos.x - 3.62, .y = 1.6, .z = b.pos.z - 0.9 }, 0.12, 0.7, 1.4, win_col);
+                rl.drawCube(.{ .x = b.pos.x - 1.4, .y = 1.6, .z = b.pos.z - 3.52 }, 1.4, 0.7, 0.12, win_col);
+
+                // Open Smithing & Forging Bay (right side)
+                // 4 heavy structural iron pillars
+                const post_h: f32 = 2.8;
+                rl.drawCube(.{ .x = b.pos.x + 1.2, .y = post_h / 2.0, .z = b.pos.z - 3.0 }, 0.35, post_h, 0.35, COLOR_STEEL_FORGE_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x + 3.4, .y = post_h / 2.0, .z = b.pos.z - 3.0 }, 0.35, post_h, 0.35, COLOR_STEEL_FORGE_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x + 1.2, .y = post_h / 2.0, .z = b.pos.z + 1.2 }, 0.35, post_h, 0.35, COLOR_STEEL_FORGE_CHIMNEY);
+                rl.drawCube(.{ .x = b.pos.x + 3.4, .y = post_h / 2.0, .z = b.pos.z + 1.2 }, 0.35, post_h, 0.35, COLOR_STEEL_FORGE_CHIMNEY);
+
+                // Sloped forge canopy awning
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 2.9, .z = b.pos.z - 0.9 }, 2.8, 0.25, 4.8, COLOR_STEEL_FORGE_ROOF);
+
+                // Hot coal smithing forge hearth with glowing bed of coals
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 0.75, .z = b.pos.z - 2.0 }, 1.2, 0.75, 1.2, COLOR_STEEL_FORGE_FOUNDATION);
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 1.15, .z = b.pos.z - 2.0 }, 0.8, 0.15, 0.8, COLOR_STEEL_FORGE_FIRE);
+
+                // Heavy steel blacksmith anvil on iron block
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 0.65, .z = b.pos.z - 0.5 }, 0.8, 0.60, 0.8, COLOR_STEEL_FORGE_FOUNDATION);
+                rl.drawCube(.{ .x = b.pos.x + 2.3, .y = 1.1, .z = b.pos.z - 0.5 }, 0.5, 0.35, 1.1, COLOR_STEEL_FORGE_STEEL);
+
+                // Water quenching trough
+                rl.drawCube(.{ .x = b.pos.x + 1.3, .y = 0.55, .z = b.pos.z + 2.6 }, 1.2, 0.55, 1.6, rl.Color.init(45, 52, 62, 255));
+                rl.drawCube(.{ .x = b.pos.x + 1.3, .y = 0.75, .z = b.pos.z + 2.6 }, 0.9, 0.15, 1.3, rl.Color.init(60, 95, 130, 255));
+
+                // Stack of manufactured steel ingots / billets in the yard
+                rl.drawCube(.{ .x = b.pos.x + 2.8, .y = 0.55, .z = b.pos.z + 2.6 }, 1.4, 0.50, 1.6, COLOR_STEEL_PILE);
+                rl.drawCube(.{ .x = b.pos.x + 2.8, .y = 0.95, .z = b.pos.z + 2.6 }, 1.0, 0.35, 1.2, COLOR_STEEL_FORGE_STEEL);
+
+                // Iron slag scrap heap
+                rl.drawCube(.{ .x = b.pos.x - 2.5, .y = 0.5, .z = b.pos.z + 2.7 }, 1.2, 0.45, 1.1, rl.Color.init(50, 46, 44, 255));
+            }
         } else {
             // House
             if (b.state == .constructing or b.state == .dismantling) {
@@ -3174,6 +3448,12 @@ fn drawBuildingsSolids(cand_pos: ?rl.Vector3, placing: ?BuildingType, can_place:
                     rl.drawCube(.{ .x = pos.x - 1.4, .y = 2.93, .z = pos.z - 0.9 }, 4.8, 0.75, 5.6, col);
                     rl.drawCube(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, col);
                     rl.drawCube(.{ .x = pos.x - 3.0, .y = 3.3, .z = pos.z - 2.8 }, 0.45, 2.2, 0.45, col);
+                } else if (btype == .steel_forge) {
+                    rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 7.84, 0.36, 7.84, col);
+                    rl.drawCube(.{ .x = pos.x - 1.4, .y = 1.56, .z = pos.z - 0.9 }, 4.4, 2.4, 5.2, col);
+                    rl.drawCube(.{ .x = pos.x - 1.4, .y = 3.03, .z = pos.z - 0.9 }, 4.8, 0.65, 5.6, col);
+                    rl.drawCube(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, col);
+                    rl.drawCube(.{ .x = pos.x - 2.8, .y = 3.8, .z = pos.z - 2.6 }, 0.85, 3.4, 0.85, col);
                 } else {
                     rl.drawCube(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, col);
                     rl.drawCube(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, col);
@@ -3191,9 +3471,10 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
         const is_gh = (b.btype == .greenhouse);
         const is_cm = (b.btype == .coal_mine);
         const is_ws = (b.btype == .wood_shack);
-        const w_sz: f32 = if (is_cm or is_ws) 7.84 else if (is_lab) 5.8 else 3.84;
-        const l_sz: f32 = if (is_cm or is_ws) 7.84 else if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
-        const h_sz: f32 = if (is_cm) 4.6 else if (is_ws) 3.6 else if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
+        const is_sf = (b.btype == .steel_forge);
+        const w_sz: f32 = if (is_cm or is_ws or is_sf) 7.84 else if (is_lab) 5.8 else 3.84;
+        const l_sz: f32 = if (is_cm or is_ws or is_sf) 7.84 else if (is_lab) 5.8 else if (is_gh) 7.84 else 3.92;
+        const h_sz: f32 = if (is_cm) 4.6 else if (is_sf) 4.2 else if (is_ws) 3.6 else if (is_lab) 3.6 else if (is_gh) 3.0 else 3.2;
 
         if (b.state == .constructing or b.state == .dismantling) {
             const scaf_col = if (b.state == .dismantling) COLOR_DISMANTLE_SCAFFOLD else COLOR_SCAFFOLDING;
@@ -3218,6 +3499,12 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                 rl.drawCubeWires(.{ .x = b.pos.x - 1.4, .y = 2.93, .z = b.pos.z - 0.9 }, 4.8, 0.75, 5.6, rl.Color.init(45, 55, 65, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x + 2.3, .y = 2.9, .z = b.pos.z - 0.9 }, 2.8, 0.25, 4.8, rl.Color.init(55, 60, 65, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x - 3.0, .y = 3.3, .z = b.pos.z - 2.8 }, 0.45, 2.2, 0.45, rl.Color.init(40, 42, 45, 255));
+            } else if (is_sf) {
+                rl.drawCubeWires(.{ .x = b.pos.x, .y = 0.18, .z = b.pos.z }, 7.84, 0.36, 7.84, rl.Color.init(45, 50, 58, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 1.4, .y = 1.56, .z = b.pos.z - 0.9 }, 4.4, 2.4, 5.2, rl.Color.init(55, 62, 72, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 1.4, .y = 3.03, .z = b.pos.z - 0.9 }, 4.8, 0.65, 5.6, rl.Color.init(50, 56, 66, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x + 2.3, .y = 2.9, .z = b.pos.z - 0.9 }, 2.8, 0.25, 4.8, rl.Color.init(55, 62, 70, 255));
+                rl.drawCubeWires(.{ .x = b.pos.x - 2.8, .y = 3.8, .z = b.pos.z - 2.6 }, 0.85, 3.4, 0.85, rl.Color.init(60, 65, 75, 255));
             } else {
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 1.4, .z = b.pos.z }, 3.6, 2.2, 3.6, rl.Color.init(35, 25, 20, 255));
                 rl.drawCubeWires(.{ .x = b.pos.x, .y = 2.85, .z = b.pos.z }, 3.92, 0.75, 3.92, rl.Color.init(30, 36, 42, 255));
@@ -3275,6 +3562,12 @@ fn drawBuildingsWires(selected: ?usize, hovered: ?usize, cand_pos: ?rl.Vector3, 
                     rl.drawCubeWires(.{ .x = pos.x - 1.4, .y = 2.93, .z = pos.z - 0.9 }, 4.8, 0.75, 5.6, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x - 3.0, .y = 3.3, .z = pos.z - 2.8 }, 0.45, 2.2, 0.45, wire_col);
+                } else if (btype == .steel_forge) {
+                    rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 7.84, 0.36, 7.84, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 1.4, .y = 1.56, .z = pos.z - 0.9 }, 4.4, 2.4, 5.2, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 1.4, .y = 3.03, .z = pos.z - 0.9 }, 4.8, 0.65, 5.6, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x + 2.3, .y = 2.9, .z = pos.z - 0.9 }, 2.8, 0.25, 4.8, wire_col);
+                    rl.drawCubeWires(.{ .x = pos.x - 2.8, .y = 3.8, .z = pos.z - 2.6 }, 0.85, 3.4, 0.85, wire_col);
                 } else {
                     rl.drawCubeWires(.{ .x = pos.x, .y = 0.18, .z = pos.z }, 3.92, 0.36, 3.92, wire_col);
                     rl.drawCubeWires(.{ .x = pos.x, .y = 1.4, .z = pos.z }, 3.6, 2.2, 3.6, wire_col);
@@ -3624,7 +3917,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     );
                 }
             }
-        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack)) {
+        } else if (b.state == .completed and (b.btype == .greenhouse or b.btype == .lab or b.btype == .coal_mine or b.btype == .wood_shack or b.btype == .steel_forge)) {
             const screen_pos = rl.getWorldToScreen(.{ .x = b.pos.x, .y = 3.8, .z = b.pos.z }, camera);
             if (screen_pos.x > -100 and screen_pos.x < sw + 100 and screen_pos.y > -100 and screen_pos.y < sh + 100) {
                 const badge_w: f32 = 175.0;
@@ -3642,7 +3935,8 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 const is_gh = (b.btype == .greenhouse);
                 const is_lab_b = (b.btype == .lab);
                 const is_cm = (b.btype == .coal_mine);
-                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else if (is_lab_b) LAB_CAPACITY else if (is_cm) COAL_MINE_CAPACITY else WOOD_SHACK_CAPACITY;
+                const is_ws = (b.btype == .wood_shack);
+                const max_cap = if (is_gh) GREENHOUSE_CAPACITY else if (is_lab_b) LAB_CAPACITY else if (is_cm) COAL_MINE_CAPACITY else if (is_ws) WOOD_SHACK_CAPACITY else STEEL_FORGE_CAPACITY;
                 const assigned = b.assigned_workers;
 
                 const primary_color = if (is_gh)
@@ -3651,8 +3945,10 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                     rl.Color.init(100, 215, 255, 255)
                 else if (is_cm)
                     rl.Color.init(245, 175, 65, 255)
+                else if (is_ws)
+                    rl.Color.init(195, 130, 80, 255)
                 else
-                    rl.Color.init(195, 130, 80, 255);
+                    rl.Color.init(140, 175, 215, 255);
 
                 const bg_color = if (is_selected)
                     rl.Color.init(35, 48, 65, 250)
@@ -3673,7 +3969,7 @@ fn drawBuildingLabels(camera: rl.Camera3D) void {
                 rl.drawRectangle(@intFromFloat(br.x + 8), @intFromFloat(br.y + 7), 12, 14, primary_color);
 
                 // Building Name
-                const name_text = if (is_gh) "Greenhouse" else if (is_lab_b) "Lab" else if (is_cm) "Coal Mine" else "Wood Shack";
+                const name_text = if (is_gh) "Greenhouse" else if (is_lab_b) "Lab" else if (is_cm) "Coal Mine" else if (is_ws) "Wood Shack" else "Steel Forge";
                 rl.drawText(
                     name_text,
                     @intFromFloat(br.x + 25),
@@ -3757,6 +4053,7 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
             const is_gh = (b.btype == .greenhouse);
             const is_cm = (b.btype == .coal_mine);
             const is_ws = (b.btype == .wood_shack);
+            const is_sf = (b.btype == .steel_forge);
 
             const border_color = if (b.state == .dismantling)
                 COLOR_DISMANTLE_SCAFFOLD
@@ -3768,6 +4065,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 rl.Color.init(235, 165, 60, 255)
             else if (is_ws)
                 rl.Color.init(195, 130, 80, 255)
+            else if (is_sf)
+                rl.Color.init(120, 185, 245, 255)
             else
                 rl.Color.init(184, 138, 72, 255);
 
@@ -3794,6 +4093,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 COLOR_COAL_MINE_HEADFRAME
             else if (is_ws)
                 COLOR_WOOD_SHACK_LOGS
+            else if (is_sf)
+                COLOR_STEEL_FORGE_STEEL
             else
                 COLOR_WOOD_PILE;
             rl.drawRectangle(@intFromFloat(panel_x + 14), @intFromFloat(panel_y + 12), 12, 14, icon_color);
@@ -3805,6 +4106,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 fmt("COAL MINE #{d}", .{bid + 1})
             else if (is_ws)
                 fmt("WOOD SHACK #{d}", .{bid + 1})
+            else if (is_sf)
+                fmt("STEEL FORGE #{d}", .{bid + 1})
             else
                 fmt("HOUSE #{d}", .{bid + 1});
             rl.drawText(
@@ -3820,6 +4123,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                     rl.Color.init(250, 195, 80, 255)
                 else if (is_ws)
                     rl.Color.init(245, 185, 120, 255)
+                else if (is_sf)
+                    rl.Color.init(175, 205, 245, 255)
                 else
                     rl.Color.init(245, 205, 70, 255),
             );
@@ -3840,6 +4145,8 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                 fmt("Extraction Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else if (is_ws)
                 fmt("Timber Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
+            else if (is_sf)
+                fmt("Metallurgical Facility | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z })
             else
                 fmt("Residential Shelter | Grid: ({d}, {d})", .{ b.grid_x, b.grid_z });
             rl.drawText(subtitle, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 30), 11, rl.Color.init(140, 175, 210, 255));
@@ -4045,6 +4352,53 @@ fn drawBuildingDialog(camera: rl.Camera3D, sw_f: f32, sh_f: f32) void {
                         if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
                             if (b.assigned_workers > 0) {
                                 assignWoodShackWorkers(bid, -b.assigned_workers);
+                            }
+                            buildings[bid].state = .dismantling;
+                            buildings[bid].progress = 1.0;
+                            buildings[bid].active_builders = 0;
+                            if (!hasCompletedLab() and research_menu_open) {
+                                research_menu_open = false;
+                            }
+                        }
+                    }
+                    rl.drawText("Demolition refunds resources upon completion", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 190), 11, rl.Color.init(140, 155, 175, 255));
+                } else if (is_sf) {
+                    const status_str = if (b.assigned_workers >= STEEL_FORGE_CAPACITY) "STATUS: FULL PRODUCTION" else if (b.assigned_workers > 0) "STATUS: PARTIAL PRODUCTION" else "STATUS: UNSTAFFED (IDLE)";
+                    rl.drawText(status_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 50), 11, if (b.assigned_workers > 0) rl.Color.init(100, 230, 140, 255) else rl.Color.init(245, 195, 65, 255));
+
+                    const staff_str = fmt("Staff: {d} / {d} Smiths", .{ b.assigned_workers, STEEL_FORGE_CAPACITY });
+                    rl.drawText(staff_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 68), 13, rl.Color.white);
+
+                    const yield_str = fmt("Yield: +{d:.1} Steel/sec (Infinite)", .{@as(f32, @floatFromInt(b.assigned_workers)) * STEEL_FORGE_STEEL_RATE_PER_WORKER_PER_SEC});
+                    rl.drawText(yield_str, @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 86), 12, rl.Color.init(160, 210, 250, 255));
+
+                    // Worker control buttons: None, -1, +1, Max
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 104, 48, 22), "None")) {
+                            assignSteelForgeWorkers(bid, -b.assigned_workers);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 68, panel_y + 104, 38, 22), "-1")) {
+                            assignSteelForgeWorkers(bid, -1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 112, panel_y + 104, 38, 22), "+1")) {
+                            assignSteelForgeWorkers(bid, 1);
+                        }
+                        if (rg.button(rl.Rectangle.init(panel_x + 156, panel_y + 104, 48, 22), "Max")) {
+                            assignSteelForgeWorkers(bid, STEEL_FORGE_CAPACITY);
+                        }
+                    }
+
+                    if (b.is_warm) {
+                        rl.drawText("Heating: WARM (In Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, COLOR_CITIZEN_WARM);
+                    } else {
+                        rl.drawText("Heating: COLD (Outside Heat Zone)", @intFromFloat(panel_x + 14), @intFromFloat(panel_y + 134), 11, rl.Color.init(110, 185, 255, 255));
+                    }
+
+                    // Action button: Destroy
+                    if (!is_paused) {
+                        if (rg.button(rl.Rectangle.init(panel_x + 14, panel_y + 156, panel_w - 28, 24), "Destroy")) {
+                            if (b.assigned_workers > 0) {
+                                assignSteelForgeWorkers(bid, -b.assigned_workers);
                             }
                             buildings[bid].state = .dismantling;
                             buildings[bid].progress = 1.0;
@@ -4464,7 +4818,7 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
                 if (card_hovered) {
                     rl.drawText(
                         if (can_afford) "Click to select and place in the snow" else "Cannot afford (Requires 40 Wood)",
-                        @intFromFloat(card_x + card_w + 286.0),
+                        @intFromFloat(556.0 + 260.0 + 16.0),
                         @intFromFloat(card_y + 36),
                         13,
                         if (can_afford) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
@@ -4544,7 +4898,7 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
                 if (card2_hovered) {
                     rl.drawText(
                         if (can_afford_ws) "Click to select and place in the snow" else "Cannot afford (Requires 100 Wood, 50 Steel)",
-                        @intFromFloat(card2_x + card2_w + 16),
+                        @intFromFloat(556.0 + 260.0 + 16.0),
                         @intFromFloat(card2_y + 36),
                         13,
                         if (can_afford_ws) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
@@ -4573,6 +4927,87 @@ fn drawBuildUI(mouse_pos: rl.Vector2) void {
 
                 rl.drawText("Requires 'Wood Shack' research in Resources tab", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 56), 10, rl.Color.init(160, 175, 195, 255));
                 rl.drawText("4x4 Grid | Staff: 10 | Produces 10 Wood/sec", @intFromFloat(card2_x + 50), @intFromFloat(card2_y + 70), 10, rl.Color.init(120, 135, 150, 255));
+            }
+
+            // Card 3: Steel Forge
+            const sf_unlocked = (steel_forge_research_state == .completed);
+            const card3_x: f32 = 556.0;
+            const card3_y: f32 = strip_y + 44.0;
+            const card3_w: f32 = 260.0;
+            const card3_h: f32 = 92.0;
+            const card3_rect = rl.Rectangle.init(card3_x, card3_y, card3_w, card3_h);
+            const card3_hovered = rl.checkCollisionPointRec(mouse_pos, card3_rect);
+
+            const can_afford_sf = (stockpiles[@intFromEnum(Resource.wood)] >= STEEL_FORGE_WOOD_COST and stockpiles[@intFromEnum(Resource.steel)] >= STEEL_FORGE_STEEL_COST);
+
+            if (sf_unlocked) {
+                const card_bg = if (card3_hovered)
+                    rl.Color.init(35, 45, 60, 255)
+                else
+                    rl.Color.init(24, 30, 42, 240);
+
+                const card_border = if (card3_hovered)
+                    rl.Color.init(130, 205, 255, 255)
+                else
+                    rl.Color.init(65, 95, 135, 255);
+
+                rl.drawRectangleRounded(card3_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card3_rect, 0.12, 6, if (card3_hovered) 2.0 else 1.2, card_border);
+
+                // Mini Steel Forge Preview Icon
+                rl.drawRectangle(@intFromFloat(card3_x + 10), @intFromFloat(card3_y + 14), 22, 18, COLOR_STEEL_FORGE_WALLS);
+                rl.drawRectangle(@intFromFloat(card3_x + 8), @intFromFloat(card3_y + 10), 26, 6, COLOR_STEEL_FORGE_ROOF);
+                rl.drawRectangle(@intFromFloat(card3_x + 24), @intFromFloat(card3_y + 4), 6, 8, COLOR_STEEL_FORGE_CHIMNEY);
+                rl.drawRectangle(@intFromFloat(card3_x + 25), @intFromFloat(card3_y + 2), 4, 3, COLOR_STEEL_FORGE_FIRE);
+                rl.drawRectangle(@intFromFloat(card3_x + 32), @intFromFloat(card3_y + 20), 10, 10, COLOR_STEEL_FORGE_STEEL);
+
+                // Building Name
+                rl.drawText("Steel Forge", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 10), 16, rl.Color.white);
+
+                // Cost Badge
+                const cost_pill_rect = rl.Rectangle.init(card3_x + 50, card3_y + 32, 136, 20);
+                rl.drawRectangleRounded(cost_pill_rect, 0.3, 4, if (can_afford_sf) rl.Color.init(28, 55, 38, 255) else rl.Color.init(60, 28, 28, 255));
+                rl.drawRectangleRoundedLinesEx(cost_pill_rect, 0.3, 4, 1.0, if (can_afford_sf) rl.Color.init(80, 185, 115, 255) else rl.Color.init(215, 70, 70, 255));
+                const cost_text = fmt("Cost: {d}W, {d}S", .{ @as(i32, @intFromFloat(STEEL_FORGE_WOOD_COST)), @as(i32, @intFromFloat(STEEL_FORGE_STEEL_COST)) });
+                rl.drawText(cost_text, @intFromFloat(card3_x + 56), @intFromFloat(card3_y + 36), 11, if (can_afford_sf) rl.Color.init(120, 235, 150, 255) else rl.Color.init(255, 120, 120, 255));
+
+                // Footprint, Capacity & Builder Specs
+                rl.drawText("Footprint: 4x4 Grid Squares", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 56), 10, rl.Color.init(175, 205, 245, 255));
+                rl.drawText("Staff: 10 Workers | Produces 10 Steel/sec", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 70), 10, rl.Color.init(160, 180, 205, 255));
+
+                // Click instruction tip
+                if (card3_hovered) {
+                    rl.drawText(
+                        if (can_afford_sf) "Click to select and place in the snow" else "Cannot afford (Requires 100 Wood, 50 Steel)",
+                        @intFromFloat(card3_x + card3_w + 16.0),
+                        @intFromFloat(card3_y + 36),
+                        13,
+                        if (can_afford_sf) rl.Color.init(245, 205, 70, 255) else rl.Color.init(255, 100, 90, 255),
+                    );
+                }
+            } else {
+                // Locked state
+                const card_bg = rl.Color.init(20, 24, 30, 210);
+                const card_border = rl.Color.init(50, 60, 72, 200);
+
+                rl.drawRectangleRounded(card3_rect, 0.12, 6, card_bg);
+                rl.drawRectangleRoundedLinesEx(card3_rect, 0.12, 6, 1.0, card_border);
+
+                // Lock icon
+                rl.drawRectangle(@intFromFloat(card3_x + 14), @intFromFloat(card3_y + 16), 24, 22, rl.Color.init(45, 52, 64, 255));
+                rl.drawRectangleLines(@intFromFloat(card3_x + 14), @intFromFloat(card3_y + 16), 24, 22, rl.Color.init(75, 88, 105, 255));
+                rl.drawText("?", @intFromFloat(card3_x + 22), @intFromFloat(card3_y + 18), 16, rl.Color.init(140, 155, 175, 255));
+
+                // Building Name
+                rl.drawText("Steel Forge", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 10), 16, rl.Color.init(140, 150, 165, 255));
+
+                // Locked badge
+                const locked_badge = rl.Rectangle.init(card3_x + 50, card3_y + 32, 108, 18);
+                rl.drawRectangleRounded(locked_badge, 0.3, 4, rl.Color.init(40, 48, 58, 255));
+                rl.drawText("[LOCKED - RESEARCH]", @intFromFloat(card3_x + 54), @intFromFloat(card3_y + 35), 9, rl.Color.init(245, 195, 65, 255));
+
+                rl.drawText("Requires 'Steel Forge' research in Resources tab", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 56), 10, rl.Color.init(160, 175, 195, 255));
+                rl.drawText("4x4 Grid | Staff: 10 | Produces 10 Steel/sec", @intFromFloat(card3_x + 50), @intFromFloat(card3_y + 70), 10, rl.Color.init(120, 135, 150, 255));
             }
         }
     }
@@ -5080,6 +5515,115 @@ fn drawResearchUI(mouse_pos: rl.Vector2) void {
                 rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(245, 185, 65, 255));
                 rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(ws_card_x + 54), @intFromFloat(ws_card_y + 68), 10, rl.Color.init(255, 215, 80, 255));
             }
+
+            // Steel Forge Research Card
+            const sf_card_rect = getSteelForgeCardRect(strip_y);
+            const sf_card_x: f32 = sf_card_rect.x;
+            const sf_card_y: f32 = sf_card_rect.y;
+            const sf_cancel_btn_rect = getSteelForgeCancelBtnRect(strip_y);
+            const sf_cancel_hovered = (steel_forge_research_state == .researching) and rl.checkCollisionPointRec(mouse_pos, sf_cancel_btn_rect);
+            const sf_card_hovered = rl.checkCollisionPointRec(mouse_pos, sf_card_rect) and !sf_cancel_hovered;
+
+            const current_wood_sf = stockpiles[@intFromEnum(Resource.wood)];
+            const current_steel_sf = stockpiles[@intFromEnum(Resource.steel)];
+            const can_afford_sf_res = current_wood_sf >= STEEL_FORGE_RESEARCH_WOOD_COST and current_steel_sf >= STEEL_FORGE_RESEARCH_STEEL_COST;
+
+            const sf_card_bg = if (sf_card_hovered and steel_forge_research_state == .available)
+                rl.Color.init(32, 42, 58, 255)
+            else
+                rl.Color.init(22, 28, 38, 240);
+
+            const sf_card_border = if (sf_card_hovered and steel_forge_research_state == .available)
+                rl.Color.init(130, 205, 255, 255)
+            else
+                rl.Color.init(65, 95, 130, 255);
+
+            rl.drawRectangleRounded(sf_card_rect, 0.12, 6, sf_card_bg);
+            rl.drawRectangleRoundedLinesEx(sf_card_rect, 0.12, 6, if (sf_card_hovered and steel_forge_research_state == .available) 2.0 else 1.2, sf_card_border);
+
+            // Icon: Steel forge / blast furnace symbol
+            rl.drawRectangle(@intFromFloat(sf_card_x + 12), @intFromFloat(sf_card_y + 12), 26, 26, rl.Color.init(30, 40, 56, 255));
+            rl.drawRectangleLines(@intFromFloat(sf_card_x + 12), @intFromFloat(sf_card_y + 12), 26, 26, rl.Color.init(100, 160, 230, 255));
+            rl.drawText("S", @intFromFloat(sf_card_x + 20), @intFromFloat(sf_card_y + 15), 18, rl.Color.init(160, 210, 255, 255));
+
+            rl.drawText("Steel Forge", @intFromFloat(sf_card_x + 48), @intFromFloat(sf_card_y + 10), 15, rl.Color.white);
+            rl.drawText("Metallurgical Project", @intFromFloat(sf_card_x + 48), @intFromFloat(sf_card_y + 28), 11, rl.Color.init(160, 195, 230, 255));
+
+            if (steel_forge_research_state == .available) {
+                // Cost badge
+                const cost_text = fmt("Cost: {d} Wood, {d} Steel | Time: 2m 00s", .{
+                    @as(i32, @intFromFloat(STEEL_FORGE_RESEARCH_WOOD_COST)),
+                    @as(i32, @intFromFloat(STEEL_FORGE_RESEARCH_STEEL_COST)),
+                });
+                rl.drawText(cost_text, @intFromFloat(sf_card_x + 48), @intFromFloat(sf_card_y + 46), 11, if (can_afford_sf_res) rl.Color.init(180, 220, 255, 255) else rl.Color.init(255, 110, 110, 255));
+
+                // Button pill
+                const btn_pill_rect = rl.Rectangle.init(sf_card_x + 48, sf_card_y + 64, 210, 20);
+                rl.drawRectangleRounded(btn_pill_rect, 0.3, 4, if (can_afford_sf_res) (if (sf_card_hovered) rl.Color.init(40, 75, 115, 255) else rl.Color.init(30, 55, 85, 255)) else rl.Color.init(55, 25, 25, 255));
+                rl.drawRectangleRoundedLinesEx(btn_pill_rect, 0.3, 4, 1.0, if (can_afford_sf_res) rl.Color.init(80, 150, 220, 255) else rl.Color.init(180, 60, 60, 255));
+                rl.drawText(if (can_afford_sf_res) "Click to Research (25W, 25S)" else "Need 25 Wood, 25 Steel", @intFromFloat(sf_card_x + 54), @intFromFloat(sf_card_y + 68), 10, if (can_afford_sf_res) rl.Color.white else rl.Color.init(255, 130, 130, 255));
+            } else if (steel_forge_research_state == .researching) {
+                const total_researchers = getTotalLabWorkers();
+                const pct = getActiveResearchProgress();
+                const speed_mult = getResearchSpeedMultiplier();
+                if (speed_mult > 0.0) {
+                    const rem_sec_f = (STEEL_FORGE_RESEARCH_DURATION - steel_forge_research_progress) / speed_mult;
+                    const rem = @max(0, @as(i32, @intFromFloat(rem_sec_f)));
+                    const rem_min = @divTrunc(rem, 60);
+                    const rem_sec = @rem(rem, 60);
+
+                    const speed_pct = @as(i32, @intFromFloat(speed_mult * 100.0));
+                    const staff_info = if (total_researchers > getMaxEffectiveResearchWorkers())
+                        fmt("{d} Staff (Cap 4 Labs), {d}%", .{ total_researchers, speed_pct })
+                    else
+                        fmt("{d} Staff, {d}%", .{ total_researchers, speed_pct });
+
+                    _ = rl.drawText(
+                        fmt("Researching: {d}% | ~{d}m {d:0>2}s left ({s})", .{
+                            @as(i32, @intFromFloat(pct * 100.0)),
+                            rem_min,
+                            rem_sec,
+                            staff_info,
+                        }),
+                        @intFromFloat(sf_card_x + 48),
+                        @intFromFloat(sf_card_y + 46),
+                        11,
+                        rl.Color.init(120, 210, 255, 255),
+                    );
+                } else {
+                    _ = rl.drawText(
+                        fmt("PAUSED: 0 Staff in Labs (Progress: {d}%)", .{@as(i32, @intFromFloat(pct * 100.0))}),
+                        @intFromFloat(sf_card_x + 48),
+                        @intFromFloat(sf_card_y + 46),
+                        11,
+                        rl.Color.init(255, 120, 100, 255),
+                    );
+                }
+
+                // Progress Bar
+                const bar_x: f32 = sf_card_x + 48.0;
+                const bar_y: f32 = sf_card_y + 66.0;
+                const bar_w: f32 = sf_cancel_btn_rect.x - 10.0 - bar_x;
+                const bar_h: f32 = 14.0;
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, rl.Color.init(20, 30, 40, 255));
+                rl.drawRectangleRoundedLinesEx(rl.Rectangle.init(bar_x, bar_y, bar_w, bar_h), 0.3, 4, 1.0, rl.Color.init(60, 100, 130, 255));
+                rl.drawRectangleRounded(rl.Rectangle.init(bar_x, bar_y, bar_w * pct, bar_h), 0.3, 4, if (total_researchers > 0) rl.Color.init(80, 185, 255, 255) else rl.Color.init(180, 80, 70, 255));
+
+                // Cancel Button
+                rl.drawRectangleRounded(sf_cancel_btn_rect, 0.3, 4, if (sf_cancel_hovered) rl.Color.init(170, 40, 45, 255) else rl.Color.init(55, 25, 28, 255));
+                rl.drawRectangleRoundedLinesEx(sf_cancel_btn_rect, 0.3, 4, 1.0, if (sf_cancel_hovered) rl.Color.init(255, 110, 110, 255) else rl.Color.init(180, 60, 65, 255));
+                const cancel_tw = rl.measureText("Cancel", 11);
+                const cancel_tx = @as(i32, @intFromFloat(sf_cancel_btn_rect.x + (sf_cancel_btn_rect.width - @as(f32, @floatFromInt(cancel_tw))) / 2.0));
+                const cancel_ty = @as(i32, @intFromFloat(sf_cancel_btn_rect.y + 4.5));
+                rl.drawText("Cancel", cancel_tx, cancel_ty, 11, if (sf_cancel_hovered) rl.Color.white else rl.Color.init(255, 180, 180, 255));
+            } else if (steel_forge_research_state == .completed) {
+                rl.drawText("Unlocks 4x4 Steel Forge metallurgical building", @intFromFloat(sf_card_x + 48), @intFromFloat(sf_card_y + 46), 11, rl.Color.init(170, 205, 240, 255));
+
+                const comp_rect = rl.Rectangle.init(sf_card_x + 48, sf_card_y + 64, 160, 20);
+                rl.drawRectangleRounded(comp_rect, 0.3, 4, rl.Color.init(30, 50, 75, 255));
+                rl.drawRectangleRoundedLinesEx(comp_rect, 0.3, 4, 1.0, rl.Color.init(100, 180, 255, 255));
+                rl.drawText("[RESEARCHED - UNLOCKED]", @intFromFloat(sf_card_x + 54), @intFromFloat(sf_card_y + 68), 10, rl.Color.init(150, 215, 255, 255));
+            }
         }
     }
 }
@@ -5197,12 +5741,18 @@ fn drawPopulationPopover(x: f32, y: f32) void {
             wood_shack_workers += b.assigned_workers;
         }
     }
+    var steel_forge_workers: i32 = 0;
+    for (buildings[0..buildings_count]) |b| {
+        if (b.state == .completed and b.btype == .steel_forge) {
+            steel_forge_workers += b.assigned_workers;
+        }
+    }
     const lab_workers = getTotalLabWorkers();
-    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + coal_mine_workers + wood_shack_workers + lab_workers;
+    const total_working: i32 = resource_workers + construction_workers + greenhouse_workers + coal_mine_workers + wood_shack_workers + steel_forge_workers + lab_workers;
     const total_idle: i32 = @max(0, @as(i32, @intCast(total_citizens)) - total_working);
 
     const pop_w: f32 = 264.0;
-    const pop_h: f32 = 188.0;
+    const pop_h: f32 = 202.0;
 
     // Subtle drop shadow
     rl.drawRectangleRounded(
@@ -5247,7 +5797,7 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     const work_val_w = rl.measureText(work_val, 13);
     rl.drawText(work_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(work_val_w))), @intFromFloat(y + 37.0), 13, rl.Color.init(100, 235, 140, 255));
 
-    // Breakdown details - 3 rows
+    // Breakdown details - 4 rows
     rl.drawText(
         fmt("  Gatherers: {d}  |  Builders: {d}", .{ resource_workers, construction_workers }),
         @intFromFloat(x + 20.0),
@@ -5269,19 +5819,26 @@ fn drawPopulationPopover(x: f32, y: f32) void {
         11,
         rl.Color.init(140, 165, 190, 255),
     );
+    rl.drawText(
+        fmt("  Smiths: {d}", .{steel_forge_workers}),
+        @intFromFloat(x + 20.0),
+        @intFromFloat(y + 97.0),
+        11,
+        rl.Color.init(140, 165, 190, 255),
+    );
 
     // Idle Citizens row
-    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 110.0), 4.0, rl.Color.init(245, 185, 65, 255));
-    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 103.0), 13, rl.Color.init(220, 230, 240, 255));
+    rl.drawCircle(@intFromFloat(x + 18.0), @intFromFloat(y + 124.0), 4.0, rl.Color.init(245, 185, 65, 255));
+    rl.drawText("Idle Citizens:", @intFromFloat(x + 28.0), @intFromFloat(y + 117.0), 13, rl.Color.init(220, 230, 240, 255));
     const idle_val = fmt("{d}", .{total_idle});
     const idle_val_w = rl.measureText(idle_val, 13);
-    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 103.0), 13, rl.Color.init(255, 215, 80, 255));
+    rl.drawText(idle_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(idle_val_w))), @intFromFloat(y + 117.0), 13, rl.Color.init(255, 215, 80, 255));
 
     // Idle explanation
     rl.drawText(
         "  Available for new tasks & building",
         @intFromFloat(x + 24.0),
-        @intFromFloat(y + 123.0),
+        @intFromFloat(y + 137.0),
         11,
         rl.Color.init(140, 165, 190, 255),
     );
@@ -5289,17 +5846,17 @@ fn drawPopulationPopover(x: f32, y: f32) void {
     // Separator line
     rl.drawLine(
         @intFromFloat(x + 12.0),
-        @intFromFloat(y + 143.0),
+        @intFromFloat(y + 157.0),
         @intFromFloat(x + pop_w - 12.0),
-        @intFromFloat(y + 143.0),
+        @intFromFloat(y + 157.0),
         rl.Color.init(45, 55, 70, 255),
     );
 
     // Total row
-    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 154.0), 12, rl.Color.init(180, 195, 210, 255));
+    rl.drawText("Total Population:", @intFromFloat(x + 14.0), @intFromFloat(y + 168.0), 12, rl.Color.init(180, 195, 210, 255));
     const tot_val = fmt("{d}", .{total_citizens});
     const tot_val_w = rl.measureText(tot_val, 12);
-    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 154.0), 12, rl.Color.white);
+    rl.drawText(tot_val, @intFromFloat(x + pop_w - 14.0 - @as(f32, @floatFromInt(tot_val_w))), @intFromFloat(y + 168.0), 12, rl.Color.white);
 }
 
 fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.Camera3D, mouse_pos: rl.Vector2, placement_check: PlacementCheck) void {
@@ -5339,7 +5896,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
 
-        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses, Wood accounts for wood shacks)
+        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses, Wood accounts for wood shacks, Steel accounts for steel forges)
         var cm_coal_rate: f32 = 0.0;
         if (r == .coal) {
             for (buildings[0..buildings_count]) |b| {
@@ -5364,6 +5921,14 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
                 }
             }
         }
+        var sf_steel_rate: f32 = 0.0;
+        if (r == .steel) {
+            for (buildings[0..buildings_count]) |b| {
+                if (b.state == .completed and b.btype == .steel_forge) {
+                    sf_steel_rate += @as(f32, @floatFromInt(b.assigned_workers)) * STEEL_FORGE_STEEL_RATE_PER_WORKER_PER_SEC;
+                }
+            }
+        }
         const pile_gather = if (isPileActive(r)) (@as(f32, @floatFromInt(workers)) * r.gatherRate()) else 0.0;
         const net_rate: f32 = if (r == .coal)
             pile_gather + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
@@ -5371,6 +5936,8 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
             pile_gather + gh_food_rate
         else if (r == .wood)
             pile_gather + ws_wood_rate
+        else if (r == .steel)
+            pile_gather + sf_steel_rate
         else
             pile_gather;
 
