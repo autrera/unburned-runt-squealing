@@ -35,6 +35,16 @@ pub var STEEL_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.25;
 pub var FOOD_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.35;
 /// Maximum workers that can be assigned to a single resource pile
 pub var PILE_WORKER_CAP: i32 = 15;
+/// Initial resource amount available in each resource pile (default: 200)
+pub var PILE_INITIAL_RESOURCE: f32 = 200.0;
+/// Initial resource limit for the Coal Pile
+pub var INITIAL_COAL_PILE_RESOURCE: f32 = 200.0;
+/// Initial resource limit for the Wood Pile
+pub var INITIAL_WOOD_PILE_RESOURCE: f32 = 200.0;
+/// Initial resource limit for the Steel Pile
+pub var INITIAL_STEEL_PILE_RESOURCE: f32 = 200.0;
+/// Initial resource limit for the Food Cache
+pub var INITIAL_FOOD_PILE_RESOURCE: f32 = 200.0;
 
 // --- Resource Pile Positions (Generator is located at (0, 0, 0)) ---
 pub var COAL_PILE_POSITION: rl.Vector3 = .{ .x = -2.0, .y = 0.0, .z = -14.0 };
@@ -540,6 +550,7 @@ pub const CitizenManager = struct {
     pub fn assign(self: *CitizenManager, res: Resource, delta: i32) void {
         const res_idx = @intFromEnum(res);
         if (delta > 0) {
+            if (isPileDepleted(res)) return;
             const cur_assigned = self.assigned_counts[res_idx];
             const cap: usize = @intCast(@max(0, PILE_WORKER_CAP));
             if (cur_assigned >= cap) return;
@@ -772,7 +783,30 @@ pub const SmokeParticlesSoA = struct {
 
 var generator_active: bool = false;
 var stockpiles: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
+var pile_reserves: [4]f32 = .{ 200.0, 200.0, 200.0, 200.0 };
 var workers_assigned: [4]i32 = .{ 0, 0, 0, 0 }; // workers per Resource enum
+
+pub fn isPileActive(r: Resource) bool {
+    return pile_reserves[@intFromEnum(r)] > 0.001;
+}
+
+pub fn isPileDepleted(r: Resource) bool {
+    return pile_reserves[@intFromEnum(r)] <= 0.001;
+}
+
+fn depletePile(res: Resource) void {
+    const res_idx = @intFromEnum(res);
+    pile_reserves[res_idx] = 0.0;
+    if (workers_assigned[res_idx] > 0) {
+        assignWorkers(res, -workers_assigned[res_idx]);
+    }
+    if (selected_resource == res) {
+        selected_resource = null;
+    }
+    if (hovered_resource == res) {
+        hovered_resource = null;
+    }
+}
 var citizen_mgr: CitizenManager = .{};
 var smoke_soa: SmokeParticlesSoA = .{};
 var total_citizens: usize = 0;
@@ -1222,15 +1256,17 @@ fn canPlaceBuildingAtGrid(gx: i32, gz: i32, btype: BuildingType) PlacementCheck 
 
     // 2. Grid overlap check with Resource Piles (2x2 squares each)
     inline for (std.meta.tags(Resource)) |r| {
-        const rgx = r.gridX();
-        const rgz = r.gridZ();
-        const rgw = r.gridWidth();
-        const rgl = r.gridLength();
+        if (isPileActive(r)) {
+            const rgx = r.gridX();
+            const rgz = r.gridZ();
+            const rgw = r.gridWidth();
+            const rgl = r.gridLength();
 
-        const pile_overlap_x = (gx < rgx + rgw) and (gx + gw > rgx);
-        const pile_overlap_z = (gz < rgz + rgl) and (gz + gl > rgz);
-        if (pile_overlap_x and pile_overlap_z) {
-            return .{ .valid = false, .reason = "Overlaps resource pile" };
+            const pile_overlap_x = (gx < rgx + rgw) and (gx + gw > rgx);
+            const pile_overlap_z = (gz < rgz + rgl) and (gz + gl > rgz);
+            if (pile_overlap_x and pile_overlap_z) {
+                return .{ .valid = false, .reason = "Overlaps resource pile" };
+            }
         }
     }
 
@@ -1322,6 +1358,15 @@ fn pickTargetForRole(role: CitizenRole) rl.Vector3 {
             .z = @sin(angle) * dist,
         };
     } else if (role.toResource()) |res| {
+        if (isPileDepleted(res)) {
+            const angle = randomFloat(0.0, std.math.pi * 2.0);
+            const dist = randomFloat(CITIZEN_IDLE_MIN_RADIUS, CITIZEN_IDLE_MAX_RADIUS);
+            return .{
+                .x = @cos(angle) * dist,
+                .y = 0.0,
+                .z = @sin(angle) * dist,
+            };
+        }
         const center = res.position();
         const angle = randomFloat(0.0, std.math.pi * 2.0);
         const dist = randomFloat(1.2, CITIZEN_WORK_RADIUS);
@@ -1365,6 +1410,11 @@ fn initGame() void {
     stockpiles[@intFromEnum(Resource.steel)] = INITIAL_STEEL_STOCKPILE;
     stockpiles[@intFromEnum(Resource.food)] = INITIAL_FOOD_STOCKPILE;
 
+    pile_reserves[@intFromEnum(Resource.coal)] = INITIAL_COAL_PILE_RESOURCE;
+    pile_reserves[@intFromEnum(Resource.wood)] = INITIAL_WOOD_PILE_RESOURCE;
+    pile_reserves[@intFromEnum(Resource.steel)] = INITIAL_STEEL_PILE_RESOURCE;
+    pile_reserves[@intFromEnum(Resource.food)] = INITIAL_FOOD_PILE_RESOURCE;
+
     workers_assigned = .{ 0, 0, 0, 0 };
     selected_resource = null;
     hovered_resource = null;
@@ -1394,6 +1444,7 @@ fn initGame() void {
 }
 
 fn assignWorkers(res: Resource, delta: i32) void {
+    if (delta > 0 and isPileDepleted(res)) return;
     citizen_mgr.assign(res, delta);
     workers_assigned[@intFromEnum(res)] = @intCast(citizen_mgr.getAssignedCount(res));
 }
@@ -1494,6 +1545,15 @@ fn getGeneratorDialogRect(camera: rl.Camera3D, sw: f32, sh: f32) ?rl.Rectangle {
 }
 
 fn computePileUIBounds(r: Resource, camera: rl.Camera3D, selected: ?Resource, sw: f32, sh: f32) PileUIBounds {
+    if (isPileDepleted(r)) {
+        return .{
+            .center_screen = .{ .x = -9999.0, .y = -9999.0 },
+            .badge_rect = rl.Rectangle.init(-9999.0, -9999.0, 0.0, 0.0),
+            .card_rect = null,
+            .is_on_screen = false,
+        };
+    }
+
     const p = r.position();
     const anchor = rl.Vector3{ .x = p.x, .y = PILE_LABEL_HEIGHT_OFFSET, .z = p.z };
     const in_front = isPointInFrontOfCamera(anchor, camera);
@@ -1503,7 +1563,7 @@ fn computePileUIBounds(r: Resource, camera: rl.Camera3D, selected: ?Resource, sw
     const on_screen = in_front and badge_screen.x >= -120 and badge_screen.x <= sw + 120 and
         badge_screen.y >= -120 and badge_screen.y <= sh + 120;
 
-    const badge_w: f32 = 175.0;
+    const badge_w: f32 = 185.0;
     const badge_h: f32 = 28.0;
     const badge_rect = rl.Rectangle.init(
         badge_screen.x - badge_w / 2.0,
@@ -1570,6 +1630,7 @@ fn computeCachedUI(camera: rl.Camera3D, selected: ?Resource) CachedSceneUI {
 }
 
 fn isMouseOverPileTarget(r: Resource, mouse_pos: rl.Vector2, ui: PileUIBounds, ray: rl.Ray) bool {
+    if (isPileDepleted(r)) return false;
     if (!ui.is_on_screen) return false;
 
     // 1. Hovering the floating badge
@@ -1793,7 +1854,9 @@ pub fn main() !void {
 
             // Keyboard shortcuts to assign/recall workers when a pile is selected:
             if (selected_resource) |sel| {
-                if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
+                if (isPileDepleted(sel)) {
+                    selected_resource = null;
+                } else if (rl.isKeyPressed(.equal) or rl.isKeyPressed(.kp_add) or rl.isKeyPressed(.up)) {
                     assignWorkers(sel, 1);
                 } else if (rl.isKeyPressed(.minus) or rl.isKeyPressed(.kp_subtract) or rl.isKeyPressed(.down)) {
                     assignWorkers(sel, -1);
@@ -2224,12 +2287,18 @@ pub fn main() !void {
                 }
             }
 
-            // 2. Resource gathering from infinite piles
+            // 2. Resource gathering from limited piles
             inline for (std.meta.tags(Resource)) |r| {
                 const idx = @intFromEnum(r);
                 const count = workers_assigned[idx];
-                if (count > 0) {
-                    stockpiles[idx] += @as(f32, @floatFromInt(count)) * r.gatherRate() * dt;
+                if (count > 0 and pile_reserves[idx] > 0.0) {
+                    const gather_amount = @as(f32, @floatFromInt(count)) * r.gatherRate() * dt;
+                    const actual_gathered = @min(gather_amount, pile_reserves[idx]);
+                    pile_reserves[idx] -= actual_gathered;
+                    stockpiles[idx] += actual_gathered;
+                    if (pile_reserves[idx] <= 0.001) {
+                        depletePile(r);
+                    }
                 }
             }
 
@@ -2468,16 +2537,18 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     // --- Pass 1: Solid Geometries (Triangles Batch) ---
     // Selection & hover visual ground indicators (2x2 grid footprint = 4.0 x 4.0)
     inline for (std.meta.tags(Resource)) |r| {
-        const pos = r.position();
-        if (selected == r) {
-            rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(255, 205, 50, 50));
-        } else if (hovered == r) {
-            rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(180, 220, 255, 40));
+        if (isPileActive(r)) {
+            const pos = r.position();
+            if (selected == r) {
+                rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(255, 205, 50, 50));
+            } else if (hovered == r) {
+                rl.drawCube(.{ .x = pos.x, .y = 0.03, .z = pos.z }, 4.08, 0.05, 4.08, rl.Color.init(180, 220, 255, 40));
+            }
         }
     }
 
     // 1. COAL PILE (Solids)
-    {
+    if (isPileActive(.coal)) {
         const pos = COAL_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, COLOR_COAL_PILE);
         rl.drawCube(.{ .x = pos.x + 1.1, .y = 0.8, .z = pos.z + 0.8 }, 1.9, 1.6, 1.9, rl.Color.init(38, 38, 44, 255));
@@ -2488,7 +2559,7 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 
     // 2. WOOD PILE (Solids - fits inside 2x2 grid footprint)
-    {
+    if (isPileActive(.wood)) {
         const pos = WOOD_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x - 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, COLOR_WOOD_PILE);
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, COLOR_WOOD_PILE);
@@ -2499,7 +2570,7 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 
     // 3. STEEL PILE (Solids - fits inside 2x2 grid footprint)
-    {
+    if (isPileActive(.steel)) {
         const pos = STEEL_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z - 0.9 }, 3.8, 0.85, 1.1, COLOR_STEEL_PILE);
         rl.drawCube(.{ .x = pos.x, .y = 0.45, .z = pos.z + 0.9 }, 3.8, 0.85, 1.1, COLOR_STEEL_PILE);
@@ -2510,7 +2581,7 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 
     // 4. FOOD CACHE (Solids - fits inside 2x2 grid footprint)
-    {
+    if (isPileActive(.food)) {
         const pos = FOOD_PILE_POSITION;
         rl.drawCube(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.8, 1.9, 1.8, COLOR_FOOD_PILE);
         rl.drawCube(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.6, 1.7, 1.6, rl.Color.init(180, 50, 40, 255));
@@ -2521,22 +2592,24 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
 
     // --- Pass 2: Wire Outlines & Indicators (Lines Batch) ---
     inline for (std.meta.tags(Resource)) |r| {
-        const pos = r.position();
-        if (selected == r) {
-            rl.drawCubeWires(.{ .x = pos.x, .y = 0.06, .z = pos.z }, 4.08, 0.12, 4.08, rl.Color.gold);
-        } else if (hovered == r) {
-            rl.drawCubeWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.08, 0.08, 4.08, rl.Color.init(200, 220, 255, 180));
+        if (isPileActive(r)) {
+            const pos = r.position();
+            if (selected == r) {
+                rl.drawCubeWires(.{ .x = pos.x, .y = 0.06, .z = pos.z }, 4.08, 0.12, 4.08, rl.Color.gold);
+            } else if (hovered == r) {
+                rl.drawCubeWires(.{ .x = pos.x, .y = 0.05, .z = pos.z }, 4.08, 0.08, 4.08, rl.Color.init(200, 220, 255, 180));
+            }
         }
     }
 
     // Coal wires
-    {
+    if (isPileActive(.coal)) {
         const pos = COAL_PILE_POSITION;
         rl.drawCubeWires(.{ .x = pos.x, .y = 1.1, .z = pos.z }, 3.0, 2.2, 3.0, rl.Color.init(10, 10, 14, 255));
     }
 
     // Wood wires
-    {
+    if (isPileActive(.wood)) {
         const pos = WOOD_PILE_POSITION;
         rl.drawCubeWires(.{ .x = pos.x - 1.1, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, rl.Color.init(80, 45, 20, 255));
         rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z }, 0.9, 0.9, 3.8, rl.Color.init(80, 45, 20, 255));
@@ -2545,7 +2618,7 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 
     // Steel wires
-    {
+    if (isPileActive(.steel)) {
         const pos = STEEL_PILE_POSITION;
         rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z - 0.9 }, 3.8, 0.85, 1.1, rl.Color.init(80, 95, 110, 255));
         rl.drawCubeWires(.{ .x = pos.x, .y = 0.45, .z = pos.z + 0.9 }, 3.8, 0.85, 1.1, rl.Color.init(80, 95, 110, 255));
@@ -2553,7 +2626,7 @@ fn drawResourcePiles(selected: ?Resource, hovered: ?Resource) void {
     }
 
     // Food wires
-    {
+    if (isPileActive(.food)) {
         const pos = FOOD_PILE_POSITION;
         rl.drawCubeWires(.{ .x = pos.x - 0.9, .y = 0.95, .z = pos.z - 0.7 }, 1.9, 1.9, 1.9, rl.Color.init(100, 25, 20, 255));
         rl.drawCubeWires(.{ .x = pos.x + 0.9, .y = 0.85, .z = pos.z + 0.7 }, 1.7, 1.7, 1.7, rl.Color.init(90, 20, 18, 255));
@@ -2953,7 +3026,7 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
     // 2. Resource Piles floating badges & On-Pile Worker Assignment Stations
     inline for (std.meta.tags(Resource)) |r| {
         const ui = cached.piles[@intFromEnum(r)];
-        if (ui.is_on_screen) {
+        if (isPileActive(r) and ui.is_on_screen) {
             const assigned = workers_assigned[@intFromEnum(r)];
             const is_selected = (selected_resource == r);
             const is_hovered = (hovered_resource == r);
@@ -2972,7 +3045,7 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
 
                 // Label text: Name & worker count
                 _ = rl.drawText(
-                    fmt("{s} Pile", .{r.name()}),
+                    fmt("{s} Pile ({d:.0})", .{ r.name(), pile_reserves[@intFromEnum(r)] }),
                     @intFromFloat(br.x + 25),
                     @intFromFloat(br.y + 4),
                     11,
@@ -3040,7 +3113,7 @@ fn drawWorldLabels(cached: CachedSceneUI) void {
 
                     // Subtitle
                     rl.drawText(
-                        fmt("Resource Stockpile | Max {d} Workers", .{PILE_WORKER_CAP}),
+                        fmt("Remaining: {d:.0} | Max {d} Workers", .{ pile_reserves[@intFromEnum(r)], PILE_WORKER_CAP }),
                         @intFromFloat(cr.x + 12),
                         @intFromFloat(cr.y + 28),
                         10,
@@ -4718,12 +4791,13 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
                 }
             }
         }
+        const pile_gather = if (isPileActive(r)) (@as(f32, @floatFromInt(workers)) * r.gatherRate()) else 0.0;
         const net_rate: f32 = if (r == .coal)
-            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
+            pile_gather + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
         else if (r == .food)
-            (@as(f32, @floatFromInt(workers)) * r.gatherRate()) + gh_food_rate
+            pile_gather + gh_food_rate
         else
-            @as(f32, @floatFromInt(workers)) * r.gatherRate();
+            pile_gather;
 
         // Tag dot
         rl.drawRectangle(cur_x, 15, 10, 16, r.color());
@@ -4971,7 +5045,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
             );
 
             if (generator_active) {
-                const coal_workers = workers_assigned[@intFromEnum(Resource.coal)];
+                const coal_workers = if (isPileActive(.coal)) workers_assigned[@intFromEnum(Resource.coal)] else 0;
                 var cm_coal_rate: f32 = 0.0;
                 for (buildings[0..buildings_count]) |b| {
                     if (b.state == .completed and b.btype == .coal_mine) {
