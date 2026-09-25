@@ -35,16 +35,18 @@ pub var STEEL_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.25;
 pub var FOOD_GATHER_RATE_PER_WORKER_PER_SEC: f32 = 0.35;
 /// Maximum workers that can be assigned to a single resource pile
 pub var PILE_WORKER_CAP: i32 = 15;
-/// Initial resource amount available in each resource pile (default: 200)
-pub var PILE_INITIAL_RESOURCE: f32 = 200.0;
+/// Initial resource amount available in each resource pile (default: 1000)
+pub var PILE_INITIAL_RESOURCE: f32 = 1000.0;
 /// Initial resource limit for the Coal Pile
-pub var INITIAL_COAL_PILE_RESOURCE: f32 = 200.0;
+pub var INITIAL_COAL_PILE_RESOURCE: f32 = 1000.0;
 /// Initial resource limit for the Wood Pile
-pub var INITIAL_WOOD_PILE_RESOURCE: f32 = 200.0;
+pub var INITIAL_WOOD_PILE_RESOURCE: f32 = 1000.0;
 /// Initial resource limit for the Steel Pile
-pub var INITIAL_STEEL_PILE_RESOURCE: f32 = 200.0;
+pub var INITIAL_STEEL_PILE_RESOURCE: f32 = 1000.0;
 /// Initial resource limit for the Food Cache
-pub var INITIAL_FOOD_PILE_RESOURCE: f32 = 200.0;
+pub var INITIAL_FOOD_PILE_RESOURCE: f32 = 1000.0;
+/// Food consumed per person per second (default: 0.1)
+pub var FOOD_CONSUMPTION_PER_PERSON_PER_SEC: f32 = 0.05;
 
 // --- Resource Pile Positions (Generator is located at (0, 0, 0)) ---
 pub var COAL_PILE_POSITION: rl.Vector3 = .{ .x = -2.0, .y = 0.0, .z = -14.0 };
@@ -879,7 +881,7 @@ pub const SmokeParticlesSoA = struct {
 
 var generator_active: bool = false;
 var stockpiles: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
-var pile_reserves: [4]f32 = .{ 200.0, 200.0, 200.0, 200.0 };
+var pile_reserves: [4]f32 = .{ 1000.0, 1000.0, 1000.0, 1000.0 };
 var workers_assigned: [4]i32 = .{ 0, 0, 0, 0 }; // workers per Resource enum
 
 pub fn isPileActive(r: Resource) bool {
@@ -2720,6 +2722,11 @@ pub fn main() !void {
                     }
                 }
             }
+
+            // 2c. Citizen food consumption (each citizen consumes FOOD_CONSUMPTION_PER_PERSON_PER_SEC food/sec)
+            const food_idx = @intFromEnum(Resource.food);
+            const food_drain = @as(f32, @floatFromInt(total_citizens)) * FOOD_CONSUMPTION_PER_PERSON_PER_SEC * dt;
+            stockpiles[food_idx] = @max(0.0, stockpiles[food_idx] - food_drain);
 
             // 3. Citizens SIMD movement, wandering, and warmth calculation (Single pass SoA)
             const citizen_stats = citizen_mgr.update(dt, generator_active);
@@ -5896,7 +5903,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const amount = stockpiles[idx];
         const workers = workers_assigned[idx];
 
-        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses, Wood accounts for wood shacks, Steel accounts for steel forges)
+        // Net rate calculation (Coal accounts for generator fuel consumption and coal mines, Food accounts for greenhouses and citizen consumption, Wood accounts for wood shacks, Steel accounts for steel forges)
         var cm_coal_rate: f32 = 0.0;
         if (r == .coal) {
             for (buildings[0..buildings_count]) |b| {
@@ -5933,7 +5940,7 @@ fn drawHUD(warm_count: i32, cold_count: i32, cached: CachedSceneUI, camera: rl.C
         const net_rate: f32 = if (r == .coal)
             pile_gather + cm_coal_rate - (if (generator_active) GENERATOR_COAL_DRAIN_PER_SEC else 0.0)
         else if (r == .food)
-            pile_gather + gh_food_rate
+            pile_gather + gh_food_rate - (@as(f32, @floatFromInt(total_citizens)) * FOOD_CONSUMPTION_PER_PERSON_PER_SEC)
         else if (r == .wood)
             pile_gather + ws_wood_rate
         else if (r == .steel)
