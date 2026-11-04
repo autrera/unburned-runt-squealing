@@ -45,7 +45,10 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "raylib_quickstart",
         .root_module = exe_mod,
-        .use_lld = false,
+        // Zig's own linker (lld). Setting `.use_lld = false` (the `-fno-lld`
+        // self-hosted link path) is broken on x86_64-windows in Zig 0.16: it
+        // passes the cache directory itself to LLVM as the output path and
+        // fails with "LLVM failed to emit ... : Is a directory".
     });
 
     // Automatically configure include and library paths for user-space / WSL2

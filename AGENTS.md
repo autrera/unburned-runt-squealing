@@ -27,6 +27,7 @@ Zig quickstart template for raylib + raygui (via raylib-zig, pinned raylib 6.0.0
 ## Toolchain / platform notes (from build.zig)
 
 - Options: `-Dplatform=glfw` (default, windowed desktop) or `-Dplatform=memory` (headless software rendering); `-Dopengl_version` defaults to `gl_3_3`.
+- Link with Zig's default lld: `.use_lld = false` (flag `-fno-lld`) makes the final exe step fail on Windows with "LLVM failed to emit ... : Is a directory" (Zig 0.16 self-hosted COFF link path) — see the comment on `addExecutable` in `build.zig`.
 - Raylib is linked statically; no runtime `libraylib.so` dependency.
 - Linux desktop (glfw) needs X11 dev headers/libs (libx11, libxcursor, libxrandr, libxinerama, libxi, libgl1-mesa, libasound2).
 - build.zig adds include/lib search paths from `~/.local/{include,lib}`, `/tmp/fake_sysroot/usr/include`, and `/tmp/fake_libs` when those dirs exist (user-space/WSL2 setup).
